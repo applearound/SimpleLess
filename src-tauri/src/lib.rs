@@ -45,7 +45,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            let cfg = config::load(&app.handle());
+            let mut cfg = config::load(&app.handle());
+
+            // 自愈：就绪标志为真但密钥实际读不到（历史假成功遗留），
+            // 回退到首启向导让用户重新保存
+            if cfg.onboarded && secrets::get_api_key().is_err() {
+                cfg.onboarded = false;
+                config::save(&app.handle(), &cfg);
+            }
 
             // 首启向导：已配置过则隐藏主窗口，交由托盘
             if cfg.onboarded {
