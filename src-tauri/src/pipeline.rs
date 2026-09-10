@@ -114,8 +114,8 @@ fn reset_to_idle(app: &AppHandle, _mode: Mode) {
 
 async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
     let cfg = config::load(&app);
-    let key = secrets::get_api_key().map_err(|_| {
-        "尚未配置百炼 API Key，请从托盘菜单打开设置完成配置".to_string()
+    let key = secrets::get_api_key().map_err(|e| {
+        format!("读取 API Key 失败: {e}。请从托盘菜单打开设置重新保存")
     })?;
 
     emit(app, OverlayEvent::Listening {
