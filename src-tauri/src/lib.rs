@@ -30,6 +30,10 @@ async fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
     // 先测通再落盘，避免把坏 key 存进系统凭据管理器
     llm::verify_key(&key, &config::load(&app).llm_model).await?;
     secrets::set_api_key(&key)?;
+    // 回读校验：防止凭据存储静默失败导致假就绪状态
+    if secrets::get_api_key().ok().as_deref() != Some(key.as_str()) {
+        return Err("API Key 写入后无法读回，保存可能未生效，请重试或检查系统设置".into());
+    }
     let mut cfg = config::load(&app);
     cfg.onboarded = true;
     config::save(&app, &cfg);
