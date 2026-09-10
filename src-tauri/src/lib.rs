@@ -39,7 +39,7 @@ async fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let cfg = config::load(&app.handle());
 
@@ -73,33 +73,35 @@ pub fn run() {
                 })?;
             }
 
-            // 托盘：常驻入口，设置与退出
+            // 托盘：常驻入口，设置与退出；回调参数是托盘对象，需另持应用句柄
             let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&settings, &quit])?;
+            let handle_menu = app.handle().clone();
+            let handle_click = app.handle().clone();
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("SimpleLess 语音输入")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |_tray, event| match event.id.as_ref() {
                     "settings" => {
-                        if let Some(win) = app.get_webview_window("main") {
+                        if let Some(win) = handle_menu.get_webview_window("main") {
                             let _ = win.show();
                             let _ = win.set_focus();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => handle_menu.exit(0),
                     _ => {}
                 })
-                .on_tray_icon_event(|app, event| {
+                .on_tray_icon_event(move |_tray, event| {
                     if let tauri::tray::TrayIconEvent::Click {
                         button: tauri::tray::MouseButton::Left,
                         button_state: tauri::tray::MouseButtonState::Up,
                         ..
                     } = event
                     {
-                        if let Some(win) = app.get_webview_window("main") {
+                        if let Some(win) = handle_click.get_webview_window("main") {
                             let _ = win.show();
                             let _ = win.set_focus();
                         }

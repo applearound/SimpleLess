@@ -57,6 +57,7 @@ pub async fn start(model: &str, key: &str, language_hints: &[String]) -> Result<
     let (done_tx, done_rx) = oneshot::channel();
 
     tauri::async_runtime::spawn(async move {
+        let mut partial_tx = partial_tx;
         let (mut write, mut read) = ws.split();
 
         if write.send(Message::Text(run_task.to_string())).await.is_err() {
@@ -92,6 +93,7 @@ pub async fn start(model: &str, key: &str, language_hints: &[String]) -> Result<
         }
 
         let mut finalized = String::new();
+        #[allow(unused_assignments)]
         let mut outcome: Option<Result<String, String>> = None;
         let mut finish_sent = false;
 

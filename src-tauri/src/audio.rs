@@ -1,25 +1,52 @@
-use std::sync::{Arc, Mutex};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::mpsc as std_mpsc;
 use tokio::sync::mpsc;
 
 const TARGET_RATE: f64 = 16000.0;
 /// 每个发送包的样本数，约 100ms 音频
 const CHUNK_SAMPLES: usize = 1600;
 
-/// 停止采集的句柄，调用 stop 后流被释放、采集停止
+/// 停止采集的句柄；Stream 在 Windows 上不可跨线程，
+/// 由采集线程持有，这里只通过通道发送停止信号
 pub struct AudioStopper {
-    stream: Arc<Mutex<Option<cpal::Stream>>>,
+    stop: Option<std_mpsc::Sender<()>>,
 }
 
 impl AudioStopper {
-    pub fn stop(self) {
-        if let Some(stream) = self.stream.lock().unwrap().take() {
-            drop(stream);
+    pub fn stop(mut self) {
+        if let Some(tx) = self.stop.take() {
+            let _ = tx.send(());
         }
     }
 }
 
 /// 启动默认麦克风的采集，输出 16kHz 单声道 i16 样本流
-pub fn spawn(tx: mpsc::Sender<Vec<i16>>) -> Result<AudioStopper, String> {
+pub fn spawn(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<AudioStopper, String> {
+    let (init_tx, init_rx) = std_mpsc::channel::<Result<(), String>>();
+    let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
+
+    std::thread::spawn(move || match build_and_play(tx) {
+        Ok(stream) => {
+            let _ = init_tx.send(Ok(()));
+            // 阻塞等待停止信号，stream 存活于本线程栈上
+            let _ = stop_rx.recv();
+            drop(stream);
+        }
+        Err(e) => {
+            let _ = init_tx.send(Err(e));
+        }
+    });
+
+    match init_rx.recv() {
+        Ok(Ok(())) => Ok(AudioStopper {
+            stop: Some(stop_tx),
+        }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("音频采集线程启动失败".into()),
+    }
+}
+
+fn build_and_play(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -30,8 +57,8 @@ pub fn spawn(tx: mpsc::Sender<Vec<i16>>) -> Result<AudioStopper, String> {
 
     let in_rate = supported.sample_rate().0 as f64;
     let channels = supported.channels() as usize;
-    let config: cpal::StreamConfig = supported.into();
     let sample_format = supported.sample_format();
+    let config: cpal::StreamConfig = supported.into();
 
     let err_cb = move |err| eprintln!("[audio] 采集错误: {err}");
 
@@ -46,10 +73,7 @@ pub fn spawn(tx: mpsc::Sender<Vec<i16>>) -> Result<AudioStopper, String> {
     };
 
     stream.play().map_err(|e| format!("启动麦克风失败: {e}"))?;
-
-    Ok(AudioStopper {
-        stream: Arc::new(Mutex::new(Some(stream))),
-    })
+    Ok(stream)
 }
 
 fn build_stream<T>(
@@ -57,11 +81,12 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     channels: usize,
     in_rate: f64,
-    tx: mpsc::Sender<Vec<i16>>,
+    tx: mpsc::UnboundedSender<Vec<i16>>,
     err_cb: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream, String>
 where
-    T: cpal::Sample + std::fmt::Debug + Send + 'static,
+    T: cpal::SizedSample + std::fmt::Debug + Send + 'static,
+    f32: cpal::FromSample<T>,
 {
     let mut resampler = Resampler::new(in_rate, TARGET_RATE);
     let mut sample_buf: Vec<i16> = Vec::with_capacity(CHUNK_SAMPLES * 2);
@@ -80,7 +105,7 @@ where
                     sample_buf.push((s.clamp(-1.0, 1.0) * 32767.0) as i16);
                 }
                 if sample_buf.len() >= CHUNK_SAMPLES {
-                    let _ = tx.try_send(std::mem::take(&mut sample_buf));
+                    let _ = tx.send(std::mem::take(&mut sample_buf));
                 }
             },
             err_cb,

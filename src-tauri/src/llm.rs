@@ -118,7 +118,7 @@ pub async fn route_command(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("大模型返回错误 {status}: {truncate(&body)}"));
+        return Err(format!("大模型返回错误 {status}: {}", truncate(&body)));
     }
 
     let parsed: Resp = resp
@@ -182,7 +182,7 @@ async fn chat(key: &str, body: serde_json::Value) -> Result<String, String> {
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("大模型返回错误 {status}: {truncate(&body)}"));
+        return Err(format!("大模型返回错误 {status}: {}", truncate(&body)));
     }
 
     #[derive(Deserialize)]

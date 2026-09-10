@@ -12,12 +12,6 @@ pub enum Mode {
 }
 
 impl Mode {
-    fn label(&self) -> &'static str {
-        match self {
-            Mode::Dictate => "听写",
-            Mode::Command => "命令",
-        }
-    }
     fn event_name(&self) -> &'static str {
         match self {
             Mode::Dictate => "dictate",
@@ -90,8 +84,9 @@ impl Pipeline {
             Slot::Idle => {
                 *guard = Slot::Starting(mode);
                 drop(guard);
+                let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = start_flow(app, mode).await {
+                    if let Err(e) = start_flow(&app, mode).await {
                         reset_to_idle(&app, mode);
                         emit_error(&app, &e, mode);
                     }
@@ -99,7 +94,7 @@ impl Pipeline {
             }
             Slot::Starting(_) | Slot::Active(_) => {
                 drop(guard);
-                emit(app, OverlayEvent::Error {
+                emit(&app, OverlayEvent::Error {
                     text: "正在录音中，请先按当前热键结束".into(),
                     mode: mode.event_name(),
                 });
@@ -117,7 +112,7 @@ fn reset_to_idle(app: &AppHandle, _mode: Mode) {
     }
 }
 
-async fn start_flow(app: AppHandle, mode: Mode) -> Result<(), String> {
+async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
     let cfg = config::load(&app);
     let key = secrets::get_api_key().map_err(|_| {
         "尚未配置百炼 API Key，请从托盘菜单打开设置完成配置".to_string()
@@ -127,7 +122,7 @@ async fn start_flow(app: AppHandle, mode: Mode) -> Result<(), String> {
         text: String::new(),
         mode: mode.event_name(),
     });
-    show_overlay(&app);
+    show_overlay(app);
 
     let session = asr::start(&cfg.asr_model, &key, &cfg.language_hints).await?;
 
@@ -177,7 +172,8 @@ async fn start_flow(app: AppHandle, mode: Mode) -> Result<(), String> {
     }
 
     {
-        let mut guard = app.state::<Pipeline>().slot.lock().unwrap();
+        let pipeline = app.state::<Pipeline>();
+        let mut guard = pipeline.slot.lock().unwrap();
         if let Slot::Starting(m) = *guard {
             if m == mode {
                 *guard = Slot::Active(Active {
