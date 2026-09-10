@@ -40,8 +40,8 @@ impl Default for AppConfig {
             llm_model: "qwen3.8-27b".into(),
             polish_mode: PolishMode::Polished,
             language_hints: vec!["zh".into()],
-            hotkey_dictate: "ctrl+alt+d".into(),
-            hotkey_command: "ctrl+alt+c".into(),
+            hotkey_dictate: "capslock".into(),
+            hotkey_command: "ctrl+capslock".into(),
             max_recording_seconds: 60,
         }
     }
