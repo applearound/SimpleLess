@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Jujutsu VCS local data (colocated mode)
+.jj/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
