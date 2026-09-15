@@ -1,3 +1,5 @@
+//! API Key 存取：通过系统凭据管理器读写百炼密钥。
+
 const SERVICE: &str = "com.yezhou.simpleless";
 const ACCOUNT: &str = "dashscope-api-key";
 

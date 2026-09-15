@@ -1,3 +1,5 @@
+//! 应用配置：AppConfig 结构与默认值，以及 config.json 的加载与保存。
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::Manager;

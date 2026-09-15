@@ -1,3 +1,6 @@
+//! 录音会话状态机：响应热键开始与结束录音，串联采集、识别、
+//! 润色或命令路由，并向字幕窗口推送状态事件。
+
 use crate::{asr, audio, config, insert, llm, secrets};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};

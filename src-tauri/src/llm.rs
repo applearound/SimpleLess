@@ -1,3 +1,5 @@
+//! 大模型调用：听写文本润色、命令通道的意图路由，以及 API Key 可用性验证。
+
 use crate::config::PolishMode;
 use serde::Deserialize;
 

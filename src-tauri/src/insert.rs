@@ -1,3 +1,5 @@
+//! 文本插入：把文本写入剪贴板后模拟 Ctrl+V，粘贴到当前光标位置。
+
 use arboard::Clipboard;
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 

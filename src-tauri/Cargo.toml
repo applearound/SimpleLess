@@ -32,6 +32,11 @@ arboard = "3"
 keyring = { version = "3", features = ["windows-native"] }
 uuid = { version = "1", features = ["v4"] }
 
+# 测试专用：log 门面 + env_logger 实现，日志级别由 RUST_LOG 环境变量控制
+[dev-dependencies]
+log = "0.4"
+env_logger = "0.11"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

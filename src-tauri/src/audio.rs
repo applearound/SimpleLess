@@ -1,3 +1,6 @@
+//! 麦克风采集：从默认输入设备采样，重采样为 16kHz 单声道 i16，
+//! 按约 100ms 一包转发给识别会话。
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::mpsc as std_mpsc;
 use tokio::sync::mpsc;
@@ -48,9 +51,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<AudioStopper, String
 
 fn build_and_play(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or("找不到默认麦克风设备")?;
+    let device = host.default_input_device().ok_or("找不到默认麦克风设备")?;
     let supported = device
         .default_input_config()
         .map_err(|e| format!("读取麦克风默认配置失败: {e}"))?;
@@ -63,12 +64,24 @@ fn build_and_play(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<cpal::Stream, S
     let err_cb = move |err| eprintln!("[audio] 采集错误: {err}");
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => build_stream::<f32>(&device, &config, channels, in_rate, tx, err_cb)?,
-        cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config, channels, in_rate, tx, err_cb)?,
-        cpal::SampleFormat::I8 => build_stream::<i8>(&device, &config, channels, in_rate, tx, err_cb)?,
-        cpal::SampleFormat::I32 => build_stream::<i32>(&device, &config, channels, in_rate, tx, err_cb)?,
-        cpal::SampleFormat::U8 => build_stream::<u8>(&device, &config, channels, in_rate, tx, err_cb)?,
-        cpal::SampleFormat::U16 => build_stream::<u16>(&device, &config, channels, in_rate, tx, err_cb)?,
+        cpal::SampleFormat::F32 => {
+            build_stream::<f32>(&device, &config, channels, in_rate, tx, err_cb)?
+        }
+        cpal::SampleFormat::I16 => {
+            build_stream::<i16>(&device, &config, channels, in_rate, tx, err_cb)?
+        }
+        cpal::SampleFormat::I8 => {
+            build_stream::<i8>(&device, &config, channels, in_rate, tx, err_cb)?
+        }
+        cpal::SampleFormat::I32 => {
+            build_stream::<i32>(&device, &config, channels, in_rate, tx, err_cb)?
+        }
+        cpal::SampleFormat::U8 => {
+            build_stream::<u8>(&device, &config, channels, in_rate, tx, err_cb)?
+        }
+        cpal::SampleFormat::U16 => {
+            build_stream::<u16>(&device, &config, channels, in_rate, tx, err_cb)?
+        }
         other => return Err(format!("不支持的麦克风采样格式: {other:?}")),
     };
 
@@ -164,5 +177,28 @@ impl Resampler {
         self.phase -= n;
         self.last = input[input.len() - 1];
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cpal::traits::{DeviceTrait, HostTrait};
+
+    #[test]
+    fn test_resampler() {
+        let host = cpal::default_host();
+        let devices = host.input_devices().expect("枚举音频输入设备失败");
+
+        let mut count = 0;
+
+        for d in devices {
+            log::debug!(
+                "device: {}",
+                d.name().unwrap_or_else(|e| format!("<未知设备: {e}>"))
+            );
+            count += 1;
+        }
+
+        assert_ne!(count, 0);
     }
 }
