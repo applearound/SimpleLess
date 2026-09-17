@@ -28,7 +28,11 @@ pub struct AsrSession {
 
 /// 建立一条实时识别会话，连接失败立即返回错误。
 /// 音频收发与事件处理交给后台任务，经 AsrSession 的通道交互。
-pub async fn start(model: &str, key: &str, language_hints: &[String]) -> Result<AsrSession, String> {
+pub async fn start(
+    model: &str,
+    key: &str,
+    language_hints: &[String],
+) -> Result<AsrSession, String> {
     let ws = connect(key).await?;
     let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
     let (partial_tx, partial_rx) = watch::channel(String::new());
@@ -248,23 +252,30 @@ fn consume_event(
     let event = event_name(text)?;
     match event.as_str() {
         "result-generated" => {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
-                let sentence = &v["payload"]["output"]["sentence"];
-                let sentence_text = sentence["text"].as_str().unwrap_or("");
-                let is_end = sentence["sentence_end"].as_bool().unwrap_or(false);
-                let heartbeat = sentence["heartbeat"].as_bool().unwrap_or(false);
-                if !heartbeat && !sentence_text.is_empty() {
-                    if is_end {
-                        finalized.push_str(sentence_text);
-                    }
-                    let display = if is_end {
-                        finalized.clone()
-                    } else {
-                        format!("{finalized}{sentence_text}")
-                    };
-                    let _ = partial_tx.send(display);
-                }
+            let json_result = serde_json::from_str::<serde_json::Value>(text);
+
+            if json_result.is_err() {
+                return None;
             }
+
+            let v = json_result.unwrap();
+
+            let sentence = &v["payload"]["output"]["sentence"];
+            let sentence_text = sentence["text"].as_str().unwrap_or("");
+            let is_end = sentence["sentence_end"].as_bool().unwrap_or(false);
+            let heartbeat = sentence["heartbeat"].as_bool().unwrap_or(false);
+            if !heartbeat && !sentence_text.is_empty() {
+                if is_end {
+                    finalized.push_str(sentence_text);
+                }
+                let display = if is_end {
+                    finalized.clone()
+                } else {
+                    format!("{finalized}{sentence_text}")
+                };
+                let _ = partial_tx.send(display);
+            }
+
             None
         }
         "task-finished" => Some(Ok(finalized.clone())),
@@ -274,9 +285,7 @@ fn consume_event(
 }
 
 fn event_name(text: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()?
-        ["header"]["event"]
+    serde_json::from_str::<serde_json::Value>(text).ok()?["header"]["event"]
         .as_str()
         .map(|s| s.to_string())
 }

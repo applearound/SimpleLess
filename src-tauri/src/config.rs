@@ -39,7 +39,7 @@ impl Default for AppConfig {
         Self {
             onboarded: false,
             asr_model: "fun-asr-realtime".into(),
-            llm_model: "qwen3.8-27b".into(),
+            llm_model: "qwen3.7-flash".into(),
             polish_mode: PolishMode::Polished,
             language_hints: vec!["zh".into()],
             hotkey_dictate: "capslock".into(),

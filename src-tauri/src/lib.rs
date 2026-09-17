@@ -132,45 +132,4 @@ pub fn run() {
 // 单元测试：以下代码标注 #[cfg(test)]，仅 cargo test 时编译
 // ============================================================================
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Once;
-
-    // hello world 示例：测试就是带 #[test] 标记的普通函数
-    fn hello_world() -> &'static str {
-        "hello world"
-    }
-
-    #[test]
-    fn hello_world_输出问候语() {
-        assert_eq!(hello_world(), "hello world");
-    }
-
-    #[test]
-    fn 断言宏用法示例() {
-        assert!(1 + 1 == 2, "失败时打印这条消息");
-        assert_eq!(2 + 2, 4, "实际值 4 不等于期望值时 panic 并打印两侧");
-        assert_ne!(2 + 2, 5);
-    }
-
-    // 日志初始化：整个测试进程只执行一次；is_test(true) 让日志遵守测试器
-    // 的捕获规则，--show-output / --nocapture 的行为与 println 保持一致
-    static LOG_INIT: Once = Once::new();
-
-    fn init_log() {
-        LOG_INIT.call_once(|| {
-            env_logger::builder().is_test(true).try_init().ok();
-        });
-    }
-
-    // 需要 DEBUG 日志时运行：RUST_LOG=debug cargo test --lib -- --show-output
-    #[test]
-    fn log_output_日志输出示例() {
-        init_log();
-        log::error!("error：RUST_LOG 未设置时默认唯一可见的级别");
-        log::warn!("warn");
-        log::info!("info");
-        log::debug!("debug：设置 RUST_LOG=debug 后可见");
-        println!("println 不受 RUST_LOG 控制，靠 --show-output / --nocapture 查看");
-    }
-}
+mod tests {}

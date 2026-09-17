@@ -47,7 +47,7 @@ async function save() {
 <template>
   <main class="page">
     <h1>SimpleLess</h1>
-    <p class="tagline">语音优先的输入工具 · 无界面操作</p>
+    <p class="tagline">语音输入工具</p>
 
     <section v-if="!onboarded || showKeyForm" class="card">
       <h2>{{ onboarded ? "更换 API Key" : "初次使用" }}</h2>
