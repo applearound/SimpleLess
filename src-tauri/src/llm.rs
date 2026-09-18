@@ -6,13 +6,42 @@ use serde::Deserialize;
 /// 百炼 OpenAI 兼容端点，旧域名仍可正常使用
 const API_BASE: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
-const POLISH_SYSTEM: &str = "你是一个语音输入润色助手。用户给你的文本来自语音识别，可能包含口头语气词、重复、半截句子和明显的口误。请把它整理成通顺的书面语：去掉语气词和重复，修正口误，保留原意与原有语言，不增删实质内容，不添加任何解释或前后缀。直接输出润色后的文本。若输入为空或没有实际内容，只输出空字符串。";
+/// 所有请求共用：整体 30 秒超时，防止润色或命令请求无限挂起卡住字幕条
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client")
+}
+
+const POLISH_SYSTEM: &str = "\
+你是语音转写校对员，不是改写者。用户的文本来自语音识别，你只修复转写与口语本身的瑕疵，严格遵守最小修改原则。\n\
+\n\
+只做以下五类修正：\n\
+1. 删除纯填充的语气词（嗯、啊、呃、这个、那个、就是说等）和无意义的重复字词；有实义的要保留，比如“那个文件”里的“那个”\n\
+2. 删除说一半就改口的残句碎片，保留改口后的完整说法\n\
+3. 修正明显的同音错别字与识别错误，拿不准就保留原文\n\
+4. 按语气整理标点和断句\n\
+5. 修正明显听错的专有名词\n\
+\n\
+铁律：\n\
+- 输出保持说话人原有的用词、语序、句式和口吻，仍是口语，禁止书面化\n\
+- 禁止增删或改动任何实质内容，禁止同义替换、概括、扩写\n\
+- 禁止回答、评论或输出任何解释、前缀、后缀\n\
+- 输入为空或没有实际内容时，只输出空字符串\n\
+\n\
+示例：\n\
+输入：嗯那个我们明天下午三点半，那个，开一下周会对吧，呃没空的话说一声\n\
+输出：我们明天下午三点半开一下周会对吧，没空的话说一声\n\
+输入：把这个文件啊同步到，同步到网盘上面去，今天之内\n\
+输出：把这个文件同步到网盘上面去，今天之内";
 
 /// 把识别原文润色为书面语
 pub async fn polish(key: &str, model: &str, text: &str) -> Result<String, String> {
     let body = serde_json::json!({
         "model": model,
-        "temperature": 0.3,
+        // 保真优先：低温抑制模型自由发挥
+        "temperature": 0.1,
         "max_tokens": 2048,
         "enable_thinking": false,
         "messages": [
@@ -108,7 +137,7 @@ pub async fn route_command(
         choices: Vec<Choice>,
     }
 
-    let client = reqwest::Client::new();
+    let client = client();
     let resp = client
         .post(format!("{API_BASE}/chat/completions"))
         .header("Authorization", format!("Bearer {key}"))
@@ -182,7 +211,7 @@ pub async fn list_models(key: &str) -> Result<Vec<String>, String> {
         data: Vec<Model>,
     }
 
-    let client = reqwest::Client::new();
+    let client = client();
     let resp = client
         .get(format!("{API_BASE}/models"))
         .header("Authorization", format!("Bearer {key}"))
@@ -212,7 +241,7 @@ fn filter_qwen_models(ids: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 async fn chat(key: &str, body: serde_json::Value) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = client();
     let resp = client
         .post(format!("{API_BASE}/chat/completions"))
         .header("Authorization", format!("Bearer {key}"))

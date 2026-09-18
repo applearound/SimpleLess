@@ -71,6 +71,27 @@ fn set_polish_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn set_max_recording_seconds(app: tauri::AppHandle, seconds: u64) -> Result<(), String> {
+    // 下限 5 秒防误触；上限 20 分钟，超长连讲不现实
+    if !(5..=1200).contains(&seconds) {
+        return Err("录音时长需在 5 到 1200 秒之间".into());
+    }
+    let mut cfg = config::load(&app);
+    cfg.max_recording_seconds = seconds;
+    config::save(&app, &cfg);
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_polish(app: tauri::AppHandle) -> Result<(), String> {
+    if app.state::<Pipeline>().cancel_active_polish() {
+        Ok(())
+    } else {
+        Err("当前没有可取消的处理".into())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -174,7 +195,10 @@ pub fn run() {
             save_api_key,
             list_llm_models,
             set_llm_model,
-            set_polish_mode
+            set_polish_mode,
+            set_max_recording_seconds,
+            cancel_polish,
+            pipeline::resize_overlay
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

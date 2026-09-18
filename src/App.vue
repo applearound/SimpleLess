@@ -14,6 +14,7 @@ interface AppConfig {
   polishMode: string;
   asrModel: string;
   llmModel: string;
+  maxRecordingSeconds: number;
 }
 
 const onboarded = ref(false);
@@ -32,11 +33,16 @@ const modelsError = ref("");
 const savingModel = ref(false);
 const modelMessage = ref("");
 
+// 最长录音秒数编辑框：回车或失焦保存，越界自动钳位到 5 到 1200
+const maxSeconds = ref("");
+const savingMaxSeconds = ref(false);
+
 onMounted(async () => {
   try {
     const status = await invoke<{ onboarded: boolean; config: AppConfig }>("get_setup_status");
     onboarded.value = status.onboarded;
     config.value = status.config;
+    maxSeconds.value = String(status.config.maxRecordingSeconds ?? 60);
   } catch (e) {
     error.value = String(e);
   }
@@ -150,6 +156,27 @@ function segmentedClass(active: boolean) {
       : "text-muted-foreground hover:text-foreground",
   );
 }
+
+async function saveMaxSeconds() {
+  if (savingMaxSeconds.value) return;
+  const parsed = Math.round(Number(maxSeconds.value));
+  if (!Number.isFinite(parsed)) {
+    maxSeconds.value = String(config.value?.maxRecordingSeconds ?? 60);
+    return;
+  }
+  const n = Math.min(1200, Math.max(5, parsed));
+  maxSeconds.value = String(n);
+  if (n === config.value?.maxRecordingSeconds) return;
+  savingMaxSeconds.value = true;
+  try {
+    await invoke("set_max_recording_seconds", { seconds: n });
+    if (config.value) config.value.maxRecordingSeconds = n;
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    savingMaxSeconds.value = false;
+  }
+}
 </script>
 
 <template>
@@ -164,7 +191,7 @@ function segmentedClass(active: boolean) {
       <div class="flex flex-col gap-1">
         <h2 class="text-base font-semibold">{{ onboarded ? "更换 API Key" : "初次使用" }}</h2>
         <p v-if="!onboarded" class="text-sm leading-relaxed text-muted-foreground">
-          填入阿里云百炼平台的 API Key，这是唯一一次需要键盘的配置。验证通过后，所有操作都通过语音完成。
+          填入阿里云百炼平台的 API Key。
         </p>
       </div>
       <div class="flex flex-col gap-2">
@@ -192,131 +219,169 @@ function segmentedClass(active: boolean) {
     >
       <h2 class="text-base font-semibold">已就绪</h2>
       <p v-if="message" class="text-sm text-green-600 dark:text-green-400">{{ message }}</p>
-
-      <div class="flex flex-col gap-1.5">
-        <span class="text-sm font-medium">润色模型</span>
-        <div class="flex items-center gap-1.5">
-          <Popover :open="modelOpen" @update:open="onModelOpenChange">
-            <PopoverTrigger as-child>
-              <Button
-                variant="outline"
-                role="combobox"
-                :aria-expanded="modelOpen"
-                class="flex-1 justify-between font-normal"
-              >
-                <span class="truncate font-mono text-xs">{{ config?.llmModel ?? "选择模型" }}</span>
-                <ChevronsUpDown class="size-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" class="w-[var(--reka-popover-trigger-width)] p-0">
-              <div class="flex h-9 items-center gap-2 border-b px-3">
-                <Input
-                  v-model="modelSearch"
-                  placeholder="搜索或输入模型名..."
-                  class="h-9 border-0 px-0 shadow-none focus-visible:ring-0"
-                  @keyup.enter="onModelSearchEnter"
-                />
-              </div>
-              <div class="max-h-60 overflow-y-auto p-1">
-                <div
-                  v-if="modelsLoading"
-                  class="flex items-center justify-center gap-2 px-2 py-6 text-sm text-muted-foreground"
-                >
-                  <Loader2 class="size-4 animate-spin" /> 正在获取模型列表...
-                </div>
-                <template v-else>
-                  <p
-                    v-if="modelsError && models.length === 0"
-                    class="px-2 py-4 text-xs leading-relaxed text-muted-foreground"
-                  >
-                    {{ modelsError }}
-                  </p>
-                  <button
-                    v-for="m in filteredModels"
-                    :key="m"
-                    type="button"
-                    class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left font-mono text-sm hover:bg-accent"
-                    @click="chooseModel(m)"
-                  >
-                    <span class="truncate">{{ m }}</span>
-                    <Check v-if="m === config?.llmModel" class="size-4 shrink-0 text-primary" />
-                  </button>
-                  <button
-                    v-if="customModel"
-                    type="button"
-                    class="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                    @click="chooseModel(customModel)"
-                  >
-                    使用自定义模型
-                    <span class="truncate font-mono text-xs text-muted-foreground">
-                      {{ customModel }}
-                    </span>
-                  </button>
-                  <p
-                    v-if="models.length > 0 && filteredModels.length === 0 && !customModel"
-                    class="px-2 py-4 text-center text-sm text-muted-foreground"
-                  >
-                    无匹配模型
-                  </p>
-                </template>
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Button
-            variant="ghost"
-            size="icon"
-            title="重新获取模型列表"
-            :disabled="modelsLoading"
-            @click="loadModels(true)"
-          >
-            <RefreshCw :class="cn('size-4', modelsLoading && 'animate-spin')" />
-          </Button>
-        </div>
-        <p v-if="savingModel" class="text-xs text-muted-foreground">正在保存...</p>
-        <p v-if="modelMessage" class="text-xs text-green-600 dark:text-green-400">
-          {{ modelMessage }}
-        </p>
-      </div>
-
-      <div class="flex flex-col gap-1.5">
-        <span class="text-sm font-medium">润色档位</span>
-        <div class="inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted p-1">
-          <button
-            type="button"
-            :class="segmentedClass(config?.polishMode !== 'polished')"
-            @click="choosePolishMode('raw')"
-          >
-            原文
-          </button>
-          <button
-            type="button"
-            :class="segmentedClass(config?.polishMode === 'polished')"
-            @click="choosePolishMode('polished')"
-          >
-            润色
-          </button>
-        </div>
-      </div>
-
-      <dl v-if="config" class="flex flex-col gap-1.5 text-sm">
-        <div class="flex justify-between">
-          <dt class="text-muted-foreground">听写热键</dt>
-          <dd class="font-mono">{{ config.hotkeyDictate }}</dd>
-        </div>
-        <div class="flex justify-between">
-          <dt class="text-muted-foreground">命令热键</dt>
-          <dd class="font-mono">{{ config.hotkeyCommand }}</dd>
-        </div>
-        <div class="flex justify-between">
-          <dt class="text-muted-foreground">识别模型</dt>
-          <dd class="font-mono">{{ config.asrModel }}</dd>
-        </div>
-      </dl>
-
       <p class="text-xs leading-relaxed text-muted-foreground">
         按听写热键开始、再按一次结束，文本会插入当前光标处；按命令热键后用语音修改设置，比如说“切换成原文”。
       </p>
-      <Button variant="outline" class="self-start" @click="showKeyForm = true">更换 API Key</Button>
+
+      <div class="flex flex-col gap-2">
+        <h3 class="text-xs font-medium tracking-wider text-muted-foreground">录音与润色</h3>
+        <div class="flex flex-col gap-3 rounded-lg border bg-background p-3">
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-1">
+                <span class="text-sm font-medium">润色模型</span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-6"
+                  title="重新获取模型列表"
+                  :disabled="modelsLoading"
+                  @click="loadModels(true)"
+                >
+                  <RefreshCw :class="cn('size-3.5', modelsLoading && 'animate-spin')" />
+                </Button>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <Popover :open="modelOpen" @update:open="onModelOpenChange">
+                  <PopoverTrigger as-child>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      :aria-expanded="modelOpen"
+                      class="w-44 justify-between font-normal"
+                    >
+                      <span class="truncate font-mono text-xs">{{
+                        config?.llmModel ?? "选择模型"
+                      }}</span>
+                      <ChevronsUpDown class="size-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" class="w-[var(--reka-popover-trigger-width)] p-0">
+                    <div class="flex h-9 items-center gap-2 border-b px-3">
+                      <Input
+                        v-model="modelSearch"
+                        placeholder="搜索或输入模型名..."
+                        class="h-9 border-0 px-0 shadow-none focus-visible:ring-0"
+                        @keyup.enter="onModelSearchEnter"
+                      />
+                    </div>
+                    <div class="max-h-60 overflow-y-auto p-1">
+                      <div
+                        v-if="modelsLoading"
+                        class="flex items-center justify-center gap-2 px-2 py-6 text-sm text-muted-foreground"
+                      >
+                        <Loader2 class="size-4 animate-spin" /> 正在获取模型列表...
+                      </div>
+                      <template v-else>
+                        <p
+                          v-if="modelsError && models.length === 0"
+                          class="px-2 py-4 text-xs leading-relaxed text-muted-foreground"
+                        >
+                          {{ modelsError }}
+                        </p>
+                        <button
+                          v-for="m in filteredModels"
+                          :key="m"
+                          type="button"
+                          class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left font-mono text-sm hover:bg-accent"
+                          @click="chooseModel(m)"
+                        >
+                          <span class="truncate">{{ m }}</span>
+                          <Check
+                            v-if="m === config?.llmModel"
+                            class="size-4 shrink-0 text-primary"
+                          />
+                        </button>
+                        <button
+                          v-if="customModel"
+                          type="button"
+                          class="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                          @click="chooseModel(customModel)"
+                        >
+                          使用自定义模型
+                          <span class="truncate font-mono text-xs text-muted-foreground">
+                            {{ customModel }}
+                          </span>
+                        </button>
+                        <p
+                          v-if="models.length > 0 && filteredModels.length === 0 && !customModel"
+                          class="px-2 py-4 text-center text-sm text-muted-foreground"
+                        >
+                          无匹配模型
+                        </p>
+                      </template>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+            <p v-if="savingModel" class="text-xs text-muted-foreground">正在保存...</p>
+            <p v-if="modelMessage" class="text-xs text-green-600 dark:text-green-400">
+              {{ modelMessage }}
+            </p>
+          </div>
+
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-sm font-medium">润色档位</span>
+            <div class="inline-flex items-center gap-0.5 rounded-lg bg-muted p-1">
+              <button
+                type="button"
+                :class="segmentedClass(config?.polishMode !== 'polished')"
+                @click="choosePolishMode('raw')"
+              >
+                原文
+              </button>
+              <button
+                type="button"
+                :class="segmentedClass(config?.polishMode === 'polished')"
+                @click="choosePolishMode('polished')"
+              >
+                润色
+              </button>
+            </div>
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-sm font-medium">最长录音</span>
+              <div class="flex items-center gap-1.5">
+                <Input
+                  v-model="maxSeconds"
+                  type="number"
+                  min="5"
+                  max="1200"
+                  :disabled="savingMaxSeconds"
+                  class="h-8 w-20 text-center [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  @keyup.enter="saveMaxSeconds"
+                  @blur="saveMaxSeconds"
+                />
+                <span class="text-xs text-muted-foreground">秒</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-2">
+        <h3 class="text-xs font-medium tracking-wider text-muted-foreground">热键</h3>
+        <dl v-if="config" class="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 text-sm">
+          <div class="flex justify-between">
+            <dt class="text-muted-foreground">听写热键</dt>
+            <dd class="font-mono">{{ config.hotkeyDictate }}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-muted-foreground">命令热键</dt>
+            <dd class="font-mono">{{ config.hotkeyCommand }}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-muted-foreground">识别模型</dt>
+            <dd class="font-mono">{{ config.asrModel }}</dd>
+          </div>
+        </dl>
+      </div>
+
     </section>
+
+    <Button variant="outline" @click="showKeyForm = true">更换 API Key</Button>
   </main>
 </template>

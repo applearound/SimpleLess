@@ -4,7 +4,7 @@
 use crate::{asr, audio, config, insert, llm, secrets};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{oneshot, watch};
 
@@ -27,6 +27,7 @@ impl Mode {
 #[serde(rename_all = "lowercase", tag = "phase", rename_all_fields = "camelCase")]
 enum OverlayEvent {
     Listening { text: String, mode: &'static str },
+    Finalizing { text: String, mode: &'static str },
     Processing { text: String, mode: &'static str },
     Result { text: String, mode: &'static str },
     Error { text: String, mode: &'static str },
@@ -42,11 +43,24 @@ struct Active {
     done_rx: oneshot::Receiver<Result<String, String>>,
 }
 
-/// 会话槽位：Starting 用于占住热键，避免异步建连期间重复触发
+/// 收尾阶段：等待 ASR 定稿与润色返回，持有取消令牌
+struct Polishing {
+    id: u64,
+    mode: Mode,
+    cancel: Arc<tokio::sync::Notify>,
+}
+
+/// 会话状态机：Idle → Starting → Active → Finalizing → Polishing → Outputting → Idle，
+/// 每次转换都在 slot 锁内完成，保证原子性；润色与取消靠 select! 竞争，先到先得。
+/// Finalizing 为收尾态：已停止收音，等待 ASR 把已送入的音频全部识别完，
+/// 期间迟到的转写文本继续上屏，但不接受新语音
 enum Slot {
     Idle,
     Starting(Mode),
     Active(Active),
+    Finalizing { id: u64, mode: Mode },
+    Polishing(Polishing),
+    Outputting,
 }
 
 pub struct Pipeline {
@@ -62,13 +76,27 @@ impl Pipeline {
         }
     }
 
-    /// 热键入口：同一模式再按一次即结束，另一模式按下时提示忙碌
+/// 取消当前润色：原子置位取消令牌，迟到的润色结果将被丢弃并按原文输出
+pub fn cancel_active_polish(&self) -> bool {
+    let guard = self.slot.lock().unwrap();
+    match *guard {
+        Slot::Polishing(ref p) => {
+            p.cancel.notify_one();
+            true
+        }
+        _ => false,
+    }
+}
+
+    /// 热键入口：同一模式再按一次即停止收音并进入收尾态，另一模式按下时提示忙碌
     pub fn toggle(&self, app: &AppHandle, mode: Mode) {
         let taken: Option<Active> = {
             let mut guard = self.slot.lock().unwrap();
             match *guard {
                 Slot::Active(ref active) if active.mode == mode => {
-                    match std::mem::replace(&mut *guard, Slot::Idle) {
+                    let (fid, fmode) = (active.id, active.mode);
+                    match std::mem::replace(&mut *guard, Slot::Finalizing { id: fid, mode: fmode })
+                    {
                         Slot::Active(active) => Some(active),
                         _ => None,
                     }
@@ -95,10 +123,36 @@ impl Pipeline {
                     }
                 });
             }
-            Slot::Starting(_) | Slot::Active(_) => {
+            Slot::Active(_) => {
                 drop(guard);
                 emit(&app, OverlayEvent::Error {
                     text: "正在录音中，请先按当前热键结束".into(),
+                    mode: mode.event_name(),
+                });
+                show_overlay(app);
+            }
+            Slot::Finalizing { .. } => {
+                drop(guard);
+                emit(&app, OverlayEvent::Error {
+                    text: "正在等待识别收尾，请稍候".into(),
+                    mode: mode.event_name(),
+                });
+                show_overlay(app);
+            }
+            Slot::Polishing(ref p) => {
+                let text = if p.mode == Mode::Dictate {
+                    "正在润色处理中，可点字幕条上的取消提前结束"
+                } else {
+                    "正在处理中，请稍候"
+                };
+                drop(guard);
+                emit(&app, OverlayEvent::Error { text: text.into(), mode: mode.event_name() });
+                show_overlay(app);
+            }
+            Slot::Starting(_) | Slot::Outputting => {
+                drop(guard);
+                emit(&app, OverlayEvent::Error {
+                    text: "正在处理中，请稍候".into(),
                     mode: mode.event_name(),
                 });
                 show_overlay(app);
@@ -111,6 +165,71 @@ fn reset_to_idle(app: &AppHandle, _mode: Mode) {
     let pipeline = app.state::<Pipeline>();
     let mut guard = pipeline.slot.lock().unwrap();
     if let Slot::Starting(_) = *guard {
+        *guard = Slot::Idle;
+    }
+}
+
+/// 该 id 的会话是否仍在录音中，倒计时任务据此判断自己是否已作废
+fn session_active(app: &AppHandle, id: u64) -> bool {
+    let pipeline = app.state::<Pipeline>();
+    let guard = pipeline.slot.lock().unwrap();
+    matches!(&*guard, Slot::Active(a) if a.id == id)
+}
+
+/// 录音态 → 收尾态：槽位锁内原子转换（仅限该 id 的会话）
+fn begin_finalizing(app: &AppHandle, id: u64) -> Option<Active> {
+    let pipeline = app.state::<Pipeline>();
+    let mut guard = pipeline.slot.lock().unwrap();
+    let mode = match *guard {
+        Slot::Active(ref a) if a.id == id => a.mode,
+        _ => return None,
+    };
+    match std::mem::replace(&mut *guard, Slot::Finalizing { id, mode }) {
+        Slot::Active(active) => Some(active),
+        _ => None,
+    }
+}
+
+/// 收尾态 → 润色态：识别已排空，创建取消令牌
+fn begin_polishing(app: &AppHandle, id: u64) -> Option<Arc<tokio::sync::Notify>> {
+    let pipeline = app.state::<Pipeline>();
+    let mut guard = pipeline.slot.lock().unwrap();
+    let (pid, pmode) = match *guard {
+        Slot::Finalizing { id: fid, mode: fmode } if fid == id => (fid, fmode),
+        _ => return None,
+    };
+    let cancel = Arc::new(tokio::sync::Notify::new());
+    *guard = Slot::Polishing(Polishing {
+        id: pid,
+        mode: pmode,
+        cancel: Arc::clone(&cancel),
+    });
+    Some(cancel)
+}
+
+/// 润色态 → 输出态
+fn enter_output(app: &AppHandle, id: u64) -> bool {
+    let pipeline = app.state::<Pipeline>();
+    let mut guard = pipeline.slot.lock().unwrap();
+    if matches!(&*guard, Slot::Polishing(p) if p.id == id) {
+        *guard = Slot::Outputting;
+        true
+    } else {
+        false
+    }
+}
+
+/// 任意收尾态 → Idle，只允许当前会话自己释放
+fn release(app: &AppHandle, id: u64) {
+    let pipeline = app.state::<Pipeline>();
+    let mut guard = pipeline.slot.lock().unwrap();
+    let ours = match *guard {
+        Slot::Finalizing { id: fid, .. } => fid == id,
+        Slot::Polishing(ref p) => p.id == id,
+        Slot::Outputting => true,
+        _ => false,
+    };
+    if ours {
         *guard = Slot::Idle;
     }
 }
@@ -131,21 +250,8 @@ async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
 
     let audio_stopper = audio::spawn(session.audio_tx.clone())?;
 
-    // 实时识别文本转发到字幕窗口，会话结束后通道关闭自然退出
-    {
-        let app = app.clone();
-        let mut partial_rx = session.partial_rx.clone();
-        let mode_name = mode.event_name();
-        tauri::async_runtime::spawn(async move {
-            loop {
-                let text = partial_rx.borrow_and_update().clone();
-                emit(&app, OverlayEvent::Listening { text, mode: mode_name });
-                if partial_rx.changed().await.is_err() {
-                    break;
-                }
-            }
-        });
-    }
+    // 新会话开始，清掉上一轮可能残留的倒计时提示
+    let _ = app.emit("overlay://countdown", None::<u64>);
 
     let id = app
         .state::<Pipeline>()
@@ -155,25 +261,26 @@ async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
     {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(max_seconds)).await;
-            let pipeline = app.state::<Pipeline>();
-            let mut guard = pipeline.slot.lock().unwrap();
-            let is_current = match *guard {
-                Slot::Active(ref a) => a.id == id,
-                _ => false,
-            };
-            if is_current {
-                match std::mem::replace(&mut *guard, Slot::Idle) {
-                    Slot::Active(active) => {
-                        drop(guard);
-                        tauri::async_runtime::spawn(finish_flow(app, active));
-                    }
-                    _ => {}
+            // 全程倒计时：字幕条实时显示剩余秒数；会话提前结束则本任务作废，
+            // 不再向新会话发送旧倒计时
+            for remaining in (1..=max_seconds).rev() {
+                if !session_active(&app, id) {
+                    return;
                 }
+                let _ = app.emit("overlay://countdown", Some(remaining));
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            if !session_active(&app, id) {
+                return;
+            }
+            if let Some(active) = begin_finalizing(&app, id) {
+                tauri::async_runtime::spawn(finish_flow(app, active));
             }
         });
     }
 
+    // 先克隆一份转写接收端给转发任务，原件随后移入 Active
+    let partial_rx_fwd = session.partial_rx.clone();
     {
         let pipeline = app.state::<Pipeline>();
         let mut guard = pipeline.slot.lock().unwrap();
@@ -191,21 +298,45 @@ async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
         }
     }
 
+    // 槽位已入 Active，实时转写转发随后启动；事件类型随状态机阶段变化：
+    // 录音中发监听态，收尾中发收尾态（文字继续刷新但显示为处理样式）
+    {
+        let app = app.clone();
+        let mut partial_rx = partial_rx_fwd;
+        let mode_name = mode.event_name();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let text = partial_rx.borrow_and_update().clone();
+                let event = match *app.state::<Pipeline>().slot.lock().unwrap() {
+                    Slot::Active(_) => OverlayEvent::Listening { text, mode: mode_name },
+                    Slot::Finalizing { .. } => {
+                        OverlayEvent::Finalizing { text, mode: mode_name }
+                    }
+                    _ => break,
+                };
+                emit(&app, event);
+                if partial_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     Ok(())
 }
 
+/// 收尾状态机：从收尾态推进到润色、输出直至 Idle，所有退出路径都先释放槽位
 async fn finish_flow(app: AppHandle, mut active: Active) {
     active.audio.stop();
     // drop 音频输入端，ASR 任务据此发送 finish-task 并收尾
-    let done_rx = std::mem::replace(
-        &mut active.done_rx,
-        oneshot::channel().1,
-    );
+    let done_rx = std::mem::replace(&mut active.done_rx, oneshot::channel().1);
     drop(active.audio_tx);
     let mode = active.mode;
+    let id = active.id;
     let last_partial = active.partial_rx.borrow().clone();
 
-    emit(&app, OverlayEvent::Processing {
+    // 停止收音后进入识别收尾：文本继续刷新，界面显示为识别阶段
+    emit(&app, OverlayEvent::Finalizing {
         text: last_partial,
         mode: mode.event_name(),
     });
@@ -213,16 +344,19 @@ async fn finish_flow(app: AppHandle, mut active: Active) {
     let transcript = match done_rx.await {
         Ok(Ok(text)) => text.trim().to_string(),
         Ok(Err(e)) => {
+            release(&app, id);
             emit_error(&app, &e, mode);
             return;
         }
         Err(_) => {
+            release(&app, id);
             emit_error(&app, "识别会话异常终止", mode);
             return;
         }
     };
 
     if transcript.is_empty() {
+        release(&app, id);
         emit(&app, OverlayEvent::Result {
             text: "（没有听到内容）".into(),
             mode: mode.event_name(),
@@ -230,6 +364,15 @@ async fn finish_flow(app: AppHandle, mut active: Active) {
         hide_overlay_later(&app);
         return;
     }
+
+    // 识别已排空：收尾态 → 润色态，界面切换到润色阶段，此后取消按钮生效
+    let Some(cancel) = begin_polishing(&app, id) else {
+        return;
+    };
+    emit(&app, OverlayEvent::Processing {
+        text: transcript.clone(),
+        mode: mode.event_name(),
+    });
 
     match mode {
         Mode::Dictate => {
@@ -240,35 +383,35 @@ async fn finish_flow(app: AppHandle, mut active: Active) {
                     let key = match secrets::get_api_key() {
                         Ok(k) => k,
                         Err(e) => {
+                            release(&app, id);
                             emit_error(&app, &e, mode);
                             return;
                         }
                     };
-                    match llm::polish(&key, &cfg.llm_model, &transcript).await {
-                        Ok(polished) if !polished.is_empty() => polished,
-                        Ok(_) => transcript.clone(),
-                        Err(e) => {
-                            // 润色失败不阻断输入，降级为插入原文
-                            eprintln!("[pipeline] 润色失败，插入原文: {e}");
-                            transcript.clone()
-                        }
+                    // 原子竞争：润色返回与用户取消先到先得，落选分支连同其
+                    // Future 一起被丢弃，迟到的一方不产生任何效果
+                    tokio::select! {
+                        res = llm::polish(&key, &cfg.llm_model, &transcript) => match res {
+                            Ok(polished) if !polished.is_empty() => polished,
+                            Ok(_) => transcript.clone(),
+                            Err(e) => {
+                                // 润色失败不阻断输入，降级为插入原文
+                                eprintln!("[pipeline] 润色失败，插入原文: {e}");
+                                transcript.clone()
+                            }
+                        },
+                        _ = cancel.notified() => transcript.clone(),
                     }
                 }
             };
-            if let Err(e) = insert::insert_text(&final_text) {
-                emit_error(&app, &e, mode);
-                return;
-            }
-            emit(&app, OverlayEvent::Result {
-                text: final_text,
-                mode: mode.event_name(),
-            });
+            output_and_finish(&app, id, final_text, mode).await;
         }
         Mode::Command => {
             let mut cfg = config::load(&app);
             let key = match secrets::get_api_key() {
                 Ok(k) => k,
                 Err(e) => {
+                    release(&app, id);
                     emit_error(&app, &e, mode);
                     return;
                 }
@@ -277,21 +420,35 @@ async fn finish_flow(app: AppHandle, mut active: Active) {
                 Ok(llm::CommandOutcome::ModeSwitched { mode: new_mode, reply }) => {
                     cfg.polish_mode = new_mode;
                     config::save(&app, &cfg);
-                    emit(&app, OverlayEvent::Result { text: reply, mode: mode.event_name() });
+                    output_and_finish(&app, id, reply, mode).await;
                 }
                 Ok(llm::CommandOutcome::Replied(msg)) => {
                     let text = if msg.is_empty() { transcript.clone() } else { msg };
-                    emit(&app, OverlayEvent::Result { text, mode: mode.event_name() });
+                    output_and_finish(&app, id, text, mode).await;
                 }
                 Err(e) => {
+                    release(&app, id);
                     emit_error(&app, &e, mode);
                     return;
                 }
             }
         }
     }
+}
 
-    hide_overlay_later(&app);
+/// 输出态：剪贴板粘贴插入文本，完成后回到 Idle 并展示结果
+async fn output_and_finish(app: &AppHandle, id: u64, text: String, mode: Mode) {
+    if !enter_output(app, id) {
+        return;
+    }
+    if let Err(e) = insert::insert_text(&text) {
+        release(app, id);
+        emit_error(app, &e, mode);
+        return;
+    }
+    release(app, id);
+    emit(app, OverlayEvent::Result { text, mode: mode.event_name() });
+    hide_overlay_later(app);
 }
 
 fn emit(app: &AppHandle, event: OverlayEvent) {
@@ -338,4 +495,27 @@ fn show_overlay(app: &AppHandle) {
         let _ = win.show();
         let _ = win.set_always_on_top(true);
     }
+}
+
+/// 网页侧报告内容高度后扩展字幕窗口，底边位置保持不动，气泡视觉上向上生长
+#[tauri::command]
+pub fn resize_overlay(app: AppHandle, height: f64) {
+    let Some(win) = app.get_webview_window("overlay") else {
+        return;
+    };
+    let Ok(scale) = win.scale_factor() else {
+        return;
+    };
+    let mut new_h = (height.max(60.0) * scale) as i32;
+    // 安全上限：不超过主屏高度的六成，防止超长转写把窗口顶出屏幕
+    if let Ok(Some(monitor)) = win.primary_monitor() {
+        let max_h = (monitor.size().height as f64 * 0.6) as i32;
+        new_h = new_h.min(max_h);
+    }
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return;
+    };
+    let new_y = pos.y + size.height as i32 - new_h;
+    let _ = win.set_size(tauri::PhysicalSize::new(size.width, new_h as u32));
+    let _ = win.set_position(tauri::PhysicalPosition::new(pos.x, new_y));
 }
