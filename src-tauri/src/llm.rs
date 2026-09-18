@@ -171,6 +171,46 @@ pub async fn verify_key(key: &str, model: &str) -> Result<(), String> {
     chat(key, body).await.map(|_| ())
 }
 
+/// 拉取账号可用的模型列表，只保留 qwen 系列
+pub async fn list_models(key: &str) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Model {
+        id: String,
+    }
+    #[derive(Deserialize)]
+    struct Resp {
+        data: Vec<Model>,
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{API_BASE}/models"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .map_err(|e| format!("获取模型列表失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("获取模型列表失败 {status}: {}", truncate(&body)));
+    }
+
+    let parsed: Resp = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析模型列表失败: {e}"))?;
+    Ok(filter_qwen_models(parsed.data.into_iter().map(|m| m.id)))
+}
+
+/// 从模型 id 里筛出 qwen 开头的系列，去重并按字母序排列
+fn filter_qwen_models(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut models: Vec<String> = ids.into_iter().filter(|id| id.starts_with("qwen")).collect();
+    models.sort();
+    models.dedup();
+    models
+}
+
 async fn chat(key: &str, body: serde_json::Value) -> Result<String, String> {
     let client = reqwest::Client::new();
     let resp = client
@@ -218,5 +258,30 @@ fn truncate(s: &str) -> String {
         s.chars().take(300).collect()
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::filter_qwen_models;
+
+    #[test]
+    fn filters_qwen_and_sorts() {
+        let ids = vec![
+            "fun-asr-realtime".to_string(),
+            "qwen-max".to_string(),
+            "qwen3.7-flash".to_string(),
+            "deepseek-v3".to_string(),
+            "qwen-max".to_string(),
+        ];
+        assert_eq!(
+            filter_qwen_models(ids),
+            vec!["qwen-max".to_string(), "qwen3.7-flash".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_when_no_qwen() {
+        assert!(filter_qwen_models(vec!["paraformer-v2".to_string()]).is_empty());
     }
 }

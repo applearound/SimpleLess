@@ -32,13 +32,41 @@ async fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
     }
     // 先测通再落盘，避免把坏 key 存进系统凭据管理器
     llm::verify_key(&key, &config::load(&app).llm_model).await?;
+    // set 内部会直读钥匙串做回读校验，并更新进程内缓存
     secrets::set_api_key(&key)?;
-    // 回读校验：防止凭据存储静默失败导致假就绪状态
-    if secrets::get_api_key().ok().as_deref() != Some(key.as_str()) {
-        return Err("API Key 写入后无法读回，保存可能未生效，请重试或检查系统设置".into());
-    }
     let mut cfg = config::load(&app);
     cfg.onboarded = true;
+    config::save(&app, &cfg);
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_llm_models() -> Result<Vec<String>, String> {
+    let key = secrets::get_api_key().map_err(|_| "尚未保存 API Key，请先完成首次配置".to_string())?;
+    llm::list_models(&key).await
+}
+
+#[tauri::command]
+fn set_llm_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("模型名不能为空".into());
+    }
+    let mut cfg = config::load(&app);
+    cfg.llm_model = model;
+    config::save(&app, &cfg);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_polish_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    let mode = match mode.as_str() {
+        "raw" => config::PolishMode::Raw,
+        "polished" => config::PolishMode::Polished,
+        other => return Err(format!("未知的润色档位: {other}")),
+    };
+    let mut cfg = config::load(&app);
+    cfg.polish_mode = mode;
     config::save(&app, &cfg);
     Ok(())
 }
@@ -61,6 +89,24 @@ pub fn run() {
             if cfg.onboarded {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.hide();
+                }
+            }
+
+            // 迁移：macOS 上 Caps Lock 无法注册为全局热键，
+            // 仍持有旧默认热键的配置换成当前平台默认值
+            #[cfg(target_os = "macos")]
+            {
+                let legacy_dictate = "capslock";
+                let legacy_command = "ctrl+capslock";
+                let defaults = config::AppConfig::default();
+                if cfg.hotkey_dictate == legacy_dictate || cfg.hotkey_command == legacy_command {
+                    if cfg.hotkey_dictate == legacy_dictate {
+                        cfg.hotkey_dictate = defaults.hotkey_dictate;
+                    }
+                    if cfg.hotkey_command == legacy_command {
+                        cfg.hotkey_command = defaults.hotkey_command;
+                    }
+                    config::save(&app.handle(), &cfg);
                 }
             }
 
@@ -123,7 +169,13 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_setup_status, save_api_key])
+        .invoke_handler(tauri::generate_handler![
+            get_setup_status,
+            save_api_key,
+            list_llm_models,
+            set_llm_model,
+            set_polish_mode
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

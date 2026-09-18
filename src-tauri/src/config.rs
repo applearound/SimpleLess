@@ -34,6 +34,16 @@ impl PolishMode {
     }
 }
 
+/// Caps Lock 在 macOS 上走 flagsChanged 事件通道，无法注册为全局热键，故按平台区分默认热键
+#[cfg(target_os = "macos")]
+pub const DEFAULT_HOTKEY_DICTATE: &str = "alt+space";
+#[cfg(target_os = "macos")]
+pub const DEFAULT_HOTKEY_COMMAND: &str = "alt+shift+space";
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_HOTKEY_DICTATE: &str = "capslock";
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_HOTKEY_COMMAND: &str = "ctrl+capslock";
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -42,8 +52,8 @@ impl Default for AppConfig {
             llm_model: "qwen3.7-flash".into(),
             polish_mode: PolishMode::Polished,
             language_hints: vec!["zh".into()],
-            hotkey_dictate: "capslock".into(),
-            hotkey_command: "ctrl+capslock".into(),
+            hotkey_dictate: DEFAULT_HOTKEY_DICTATE.into(),
+            hotkey_command: DEFAULT_HOTKEY_COMMAND.into(),
             max_recording_seconds: 60,
         }
     }
@@ -70,5 +80,19 @@ pub fn save(app: &tauri::AppHandle, cfg: &AppConfig) {
     let path = config_path(app);
     if let Ok(json) = serde_json::to_string_pretty(cfg) {
         let _ = std::fs::write(path, json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hotkey_defaults_parse_as_shortcuts() {
+        for accel in [DEFAULT_HOTKEY_DICTATE, DEFAULT_HOTKEY_COMMAND] {
+            accel
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                .unwrap_or_else(|e| panic!("热键 {accel} 无法解析: {e}"));
+        }
     }
 }
