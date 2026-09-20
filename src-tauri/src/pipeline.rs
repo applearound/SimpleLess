@@ -469,11 +469,15 @@ fn emit_error(app: &AppHandle, message: &str, mode: Mode) {
     hide_overlay_later(app);
 }
 
-/// 结果展示两秒后隐藏字幕窗口
+/// 结果展示两秒后隐藏字幕窗口；等待期间用户若已开启新一轮会话，
+/// 状态机不再处于 Idle，本任务作废，窗口交由新会话管理
 fn hide_overlay_later(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if !matches!(*app.state::<Pipeline>().slot.lock().unwrap(), Slot::Idle) {
+            return;
+        }
         if let Some(win) = app.get_webview_window("overlay") {
             let _ = win.hide();
         }
