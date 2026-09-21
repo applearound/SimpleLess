@@ -25,6 +25,7 @@
         "url": "overlay.html",
         "width": 780,
         "height": 150,
+        "visibleOnAllWorkspaces": true,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,

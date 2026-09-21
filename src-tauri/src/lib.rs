@@ -15,6 +15,18 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+// macOS：字幕条面板类。可成为浮动面板但不接管键盘，
+// 配合 nonactivating 标志在不激活应用的前提下显示
+#[cfg(target_os = "macos")]
+tauri_nspanel::tauri_panel! {
+    panel!(OverlayPanel {
+        config: {
+            can_become_key_window: false,
+            is_floating_panel: true
+        }
+    })
+}
+
 /// 打开设置窗口；窗口已被销毁时按原配置重建，托盘入口不因关闭而失灵
 fn show_main(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
@@ -115,7 +127,7 @@ fn cancel_polish(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // 设置窗口点关闭只是隐藏，托盘是常驻入口，真正退出走托盘菜单
         .on_window_event(|window, event| {
@@ -125,7 +137,11 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
-        })
+        });
+    // macOS：字幕窗口转 NSPanel 的支撑插件
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+    builder
         .setup(|app| {
             let mut cfg = config::load(&app.handle());
 
@@ -158,6 +174,26 @@ pub fn run() {
                         cfg.hotkey_command = defaults.hotkey_command;
                     }
                     config::save(&app.handle(), &cfg);
+                }
+            }
+
+            // macOS：普通 NSWindow 无论加什么标志都无法显示在其他应用的全屏空间之上，
+            // 必须把窗口对象转为 NSPanel；nonactivating 让面板显示时不激活本应用，
+            // 行为标志使其加入所有空间并可作为全屏辅助窗口悬浮
+            #[cfg(target_os = "macos")]
+            {
+                use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
+                if let Some(win) = app.get_webview_window("overlay") {
+                    if let Ok(panel) = win.to_panel::<OverlayPanel>() {
+                        panel.set_level(PanelLevel::Floating.value());
+                        let _ = panel.add_style_mask(StyleMask::empty().nonactivating_panel().into());
+                        panel.set_collection_behavior(
+                            CollectionBehavior::new()
+                                .full_screen_auxiliary()
+                                .can_join_all_spaces()
+                                .into(),
+                        );
+                    }
                 }
             }
 

@@ -441,7 +441,7 @@ async fn output_and_finish(app: &AppHandle, id: u64, text: String, mode: Mode) {
     if !enter_output(app, id) {
         return;
     }
-    if let Err(e) = insert::insert_text(&text) {
+    if let Err(e) = insert::insert_text(app, &text) {
         release(app, id);
         emit_error(app, &e, mode);
         return;
@@ -496,8 +496,21 @@ fn show_overlay(app: &AppHandle) {
             let y = size.height as i32 - win_h - (96.0 * scale) as i32;
             let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
         }
-        let _ = win.show();
         let _ = win.set_always_on_top(true);
+        // macOS：面板用 orderFrontRegardless 显示，不抢焦点，可跨全屏空间。
+        // 裸 msg_send 必须在主线程执行，而本函数会被异步会话任务调用，
+        // 统一经 run_on_main_thread 派发，否则行为未定义（不显示甚至崩溃）
+        #[cfg(target_os = "macos")]
+        {
+            use tauri_nspanel::ManagerExt;
+            if let Ok(panel) = app.get_webview_panel("overlay") {
+                let _ = app.run_on_main_thread(move || {
+                    panel.order_front_regardless();
+                });
+                return;
+            }
+        }
+        let _ = win.show();
     }
 }
 

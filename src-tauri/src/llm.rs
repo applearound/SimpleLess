@@ -5,15 +5,6 @@ use serde::Deserialize;
 
 /// 百炼 OpenAI 兼容端点，旧域名仍可正常使用
 const API_BASE: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-
-/// 所有请求共用：整体 30 秒超时，防止润色或命令请求无限挂起卡住字幕条
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .expect("reqwest client")
-}
-
 const POLISH_SYSTEM: &str = "\
 你是语音转写校对员，不是改写者。用户的文本来自语音识别，你只修复转写与口语本身的瑕疵，严格遵守最小修改原则。\n\
 \n\
@@ -35,6 +26,14 @@ const POLISH_SYSTEM: &str = "\
 输出：我们明天下午三点半开一下周会对吧，没空的话说一声\n\
 输入：把这个文件啊同步到，同步到网盘上面去，今天之内\n\
 输出：把这个文件同步到网盘上面去，今天之内";
+
+/// 所有请求共用：整体 30 秒超时，防止润色或命令请求无限挂起卡住字幕条
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client")
+}
 
 /// 把识别原文润色为书面语
 pub async fn polish(key: &str, model: &str, text: &str) -> Result<String, String> {
@@ -234,7 +233,10 @@ pub async fn list_models(key: &str) -> Result<Vec<String>, String> {
 
 /// 从模型 id 里筛出 qwen 开头的系列，去重并按字母序排列
 fn filter_qwen_models(ids: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut models: Vec<String> = ids.into_iter().filter(|id| id.starts_with("qwen")).collect();
+    let mut models: Vec<String> = ids
+        .into_iter()
+        .filter(|id| id.starts_with("qwen"))
+        .collect();
     models.sort();
     models.dedup();
     models
