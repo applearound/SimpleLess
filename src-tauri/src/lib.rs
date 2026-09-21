@@ -12,8 +12,29 @@ mod secrets;
 use pipeline::{Mode, Pipeline};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+/// 打开设置窗口；窗口已被销毁时按原配置重建，托盘入口不因关闭而失灵
+fn show_main(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    match tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+        .title("SimpleLess 设置")
+        .inner_size(520.0, 560.0)
+        .resizable(false)
+        .build()
+    {
+        Ok(win) => {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        Err(e) => eprintln!("[lib] 重建设置窗口失败: {e}"),
+    }
+}
 
 #[tauri::command]
 fn get_setup_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
@@ -96,6 +117,15 @@ fn cancel_polish(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // 设置窗口点关闭只是隐藏，托盘是常驻入口，真正退出走托盘菜单
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let mut cfg = config::load(&app.handle());
 
@@ -164,12 +194,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |_tray, event| match event.id.as_ref() {
-                    "settings" => {
-                        if let Some(win) = handle_menu.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
-                    }
+                    "settings" => show_main(&handle_menu),
                     "quit" => handle_menu.exit(0),
                     _ => {}
                 })
@@ -180,10 +205,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        if let Some(win) = handle_click.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
+                        show_main(&handle_click);
                     }
                 })
                 .build(app)?;
