@@ -16,6 +16,10 @@ pub struct AppConfig {
     pub hotkey_dictate: String,
     pub hotkey_command: String,
     pub max_recording_seconds: u64,
+    /// 指定录音设备名；None 表示跟随系统默认输入设备。
+    /// 带默认值以兼容升级前的旧配置文件
+    #[serde(default)]
+    pub input_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +59,7 @@ impl Default for AppConfig {
             hotkey_dictate: DEFAULT_HOTKEY_DICTATE.into(),
             hotkey_command: DEFAULT_HOTKEY_COMMAND.into(),
             max_recording_seconds: 60,
+            input_device: None,
         }
     }
 }

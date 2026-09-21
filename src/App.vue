@@ -15,6 +15,7 @@ interface AppConfig {
   asrModel: string;
   llmModel: string;
   maxRecordingSeconds: number;
+  inputDevice?: string | null;
 }
 
 const onboarded = ref(false);
@@ -32,6 +33,12 @@ const modelsLoading = ref(false);
 const modelsError = ref("");
 const savingModel = ref(false);
 const modelMessage = ref("");
+
+// 录音设备下拉：打开时枚举，选中即保存；null 表示跟随系统默认
+const deviceOpen = ref(false);
+const devices = ref<string[]>([]);
+const devicesLoading = ref(false);
+const devicesError = ref("");
 
 // 最长录音秒数编辑框：回车或失焦保存，越界自动钳位到 5 到 1200
 const maxSeconds = ref("");
@@ -83,6 +90,35 @@ async function loadModels(force = false) {
   } finally {
     modelsLoading.value = false;
   }
+}
+
+async function loadDevices() {
+  if (devicesLoading.value) return;
+  devicesLoading.value = true;
+  devicesError.value = "";
+  try {
+    devices.value = await invoke<string[]>("list_input_devices");
+  } catch (e) {
+    devicesError.value = String(e);
+  } finally {
+    devicesLoading.value = false;
+  }
+}
+
+function onDeviceOpenChange(open: boolean | undefined) {
+  deviceOpen.value = open ?? false;
+  if (open) {
+    devicesError.value = "";
+    void loadDevices();
+  }
+}
+
+async function chooseDevice(device: string | null) {
+  deviceOpen.value = false;
+  const current = config.value?.inputDevice ?? null;
+  if (device === current) return;
+  await invoke("set_input_device", { device });
+  if (config.value) config.value.inputDevice = device;
 }
 
 const filteredModels = computed(() => {
@@ -358,6 +394,68 @@ async function saveMaxSeconds() {
                 <span class="text-xs text-muted-foreground">秒</span>
               </div>
             </div>
+          </div>
+
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-sm font-medium">录音设备</span>
+            <Popover :open="deviceOpen" @update:open="onDeviceOpenChange">
+              <PopoverTrigger as-child>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  :aria-expanded="deviceOpen"
+                  class="w-44 justify-between font-normal"
+                >
+                  <span class="truncate text-xs">{{ config?.inputDevice ?? "系统默认" }}</span>
+                  <ChevronsUpDown class="size-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" class="w-[var(--reka-popover-trigger-width)] p-0">
+                <div class="max-h-60 overflow-y-auto p-1">
+                  <div
+                    v-if="devicesLoading"
+                    class="flex items-center justify-center gap-2 px-2 py-6 text-sm text-muted-foreground"
+                  >
+                    <Loader2 class="size-4 animate-spin" /> 正在获取录音设备...
+                  </div>
+                  <p
+                    v-else-if="devicesError"
+                    class="px-2 py-4 text-xs leading-relaxed text-muted-foreground"
+                  >
+                    {{ devicesError }}
+                  </p>
+                  <template v-else>
+                    <button
+                      type="button"
+                      class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      @click="chooseDevice(null)"
+                    >
+                      <span>系统默认</span>
+                      <Check
+                        v-if="!config?.inputDevice"
+                        class="size-4 shrink-0 text-primary"
+                      />
+                    </button>
+                    <button
+                      v-for="d in devices"
+                      :key="d"
+                      type="button"
+                      class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      @click="chooseDevice(d)"
+                    >
+                      <span class="truncate">{{ d }}</span>
+                      <Check
+                        v-if="d === config?.inputDevice"
+                        class="size-4 shrink-0 text-primary"
+                      />
+                    </button>
+                    <p v-if="devices.length === 0" class="px-2 py-4 text-center text-sm text-muted-foreground">
+                      未发现录音设备
+                    </p>
+                  </template>
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
       </div>

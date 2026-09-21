@@ -117,6 +117,21 @@ fn set_max_recording_seconds(app: tauri::AppHandle, seconds: u64) -> Result<(), 
 }
 
 #[tauri::command]
+fn list_input_devices() -> Result<Vec<String>, String> {
+    Ok(audio::list_input_devices())
+}
+
+#[tauri::command]
+fn set_input_device(app: tauri::AppHandle, device: Option<String>) -> Result<(), String> {
+    // 空串视同未指定，跟随系统默认
+    let device = device.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+    let mut cfg = config::load(&app);
+    cfg.input_device = device;
+    config::save(&app, &cfg);
+    Ok(())
+}
+
+#[tauri::command]
 fn cancel_polish(app: tauri::AppHandle) -> Result<(), String> {
     if app.state::<Pipeline>().cancel_active_polish() {
         Ok(())
@@ -143,6 +158,11 @@ pub fn run() {
     let builder = builder.plugin(tauri_nspanel::init());
     builder
         .setup(|app| {
+            // macOS：转为菜单栏应用，Dock 不再显示图标，常驻入口收敛到托盘；
+            // 设置窗口的 set_focus 内部带 activateIgnoringOtherApps，弹出不受影响
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let mut cfg = config::load(&app.handle());
 
             // 自愈：就绪标志为真但密钥实际读不到（历史假成功遗留），
@@ -255,6 +275,8 @@ pub fn run() {
             set_llm_model,
             set_polish_mode,
             set_max_recording_seconds,
+            list_input_devices,
+            set_input_device,
             cancel_polish,
             pipeline::resize_overlay
         ])

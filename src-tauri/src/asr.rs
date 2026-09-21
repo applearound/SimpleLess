@@ -298,3 +298,69 @@ fn task_error(text: &str) -> String {
         .unwrap_or("语音识别任务失败");
     format!("语音识别失败: {message}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 排障复现：纯静音输入的会话能否正常收尾，定位识别收尾卡死。
+    /// cargo test test_silence_session -- --ignored --nocapture
+    #[test]
+    #[ignore = "真实调用百炼服务，仅排障时执行"]
+    fn test_silence_session() {
+        let key = crate::secrets::get_api_key().expect("读取密钥失败");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let session = start("fun-asr-realtime", &key, &["zh".to_string()])
+                .await
+                .expect("建立会话失败");
+            eprintln!("[静音复现] 会话已建立，发送 2 秒全零音频");
+            let zeros = vec![0i16; 1600];
+            for _ in 0..20 {
+                session.audio_tx.send(zeros.clone()).expect("发送失败");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            drop(session.audio_tx);
+            eprintln!("[静音复现] 音频端已关闭，等待收尾结果");
+            let t0 = std::time::Instant::now();
+            match tokio::time::timeout(std::time::Duration::from_secs(20), session.done_rx).await {
+                Ok(Ok(Ok(text))) => eprintln!("[静音复现] 正常返回(耗时{}ms): \"{text}\"", t0.elapsed().as_millis()),
+                Ok(Ok(Err(e))) => eprintln!("[静音复现] 会话报错(耗时{}ms): {e}", t0.elapsed().as_millis()),
+                Ok(Err(_)) => eprintln!("[静音复现] 发送端异常消失"),
+                Err(_) => eprintln!("[静音复现] 20 秒超时未返回，卡死复现"),
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod noaudio_tests {
+    /// 排障复现二：一包音频都不发直接收尾，模拟麦克风被系统静默拒绝的极端情况。
+    /// cargo test test_noaudio_session -- --ignored --nocapture
+    #[test]
+    #[ignore = "真实调用百炼服务，仅排障时执行"]
+    fn test_noaudio_session() {
+        let key = crate::secrets::get_api_key().expect("读取密钥失败");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let session = super::start("fun-asr-realtime", &key, &["zh".to_string()])
+                .await
+                .expect("建立会话失败");
+            eprintln!("[无音频复现] 会话已建立，不发任何音频直接收尾");
+            let t0 = std::time::Instant::now();
+            drop(session.audio_tx);
+            match tokio::time::timeout(std::time::Duration::from_secs(25), session.done_rx).await {
+                Ok(Ok(Ok(text))) => eprintln!("[无音频复现] 正常返回(耗时{}ms): 长度{}", t0.elapsed().as_millis(), text.len()),
+                Ok(Ok(Err(e))) => eprintln!("[无音频复现] 会话报错(耗时{}ms): {e}", t0.elapsed().as_millis()),
+                Ok(Err(_)) => eprintln!("[无音频复现] 发送端异常消失"),
+                Err(_) => eprintln!("[无音频复现] 25 秒超时未返回，卡死复现"),
+            }
+        });
+    }
+}

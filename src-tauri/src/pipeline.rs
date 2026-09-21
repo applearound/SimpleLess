@@ -68,6 +68,7 @@ pub struct Pipeline {
     counter: AtomicU64,
 }
 
+
 impl Pipeline {
     pub fn new() -> Self {
         Self {
@@ -248,7 +249,7 @@ async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
 
     let session = asr::start(&cfg.asr_model, &key, &cfg.language_hints).await?;
 
-    let audio_stopper = audio::spawn(session.audio_tx.clone())?;
+    let audio_stopper = audio::spawn(session.audio_tx.clone(), cfg.input_device.as_deref())?;
 
     // 新会话开始，清掉上一轮可能残留的倒计时提示
     let _ = app.emit("overlay://countdown", None::<u64>);
@@ -341,14 +342,22 @@ async fn finish_flow(app: AppHandle, mut active: Active) {
         mode: mode.event_name(),
     });
 
-    let transcript = match done_rx.await {
-        Ok(Ok(text)) => text.trim().to_string(),
-        Ok(Err(e)) => {
+    // 收尾兜底：服务端对静音会话可能要十秒上下才回终结事件，
+    // 更长的卡死一律按超时处理，避免界面永久停在识别阶段
+    let transcript = match tokio::time::timeout(std::time::Duration::from_secs(20), done_rx).await
+    {
+        Err(_) => {
+            release(&app, id);
+            emit_error(&app, "识别收尾超时，请重新录制", mode);
+            return;
+        }
+        Ok(Ok(Ok(text))) => text.trim().to_string(),
+        Ok(Ok(Err(e))) => {
             release(&app, id);
             emit_error(&app, &e, mode);
             return;
         }
-        Err(_) => {
+        Ok(Err(_)) => {
             release(&app, id);
             emit_error(&app, "识别会话异常终止", mode);
             return;
