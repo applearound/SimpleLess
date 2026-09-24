@@ -1,7 +1,7 @@
 //! 录音会话状态机：响应热键开始与结束录音，串联采集、识别、
 //! 润色或命令路由，并向字幕窗口推送状态事件。
 
-use crate::{asr, audio, config, insert, llm, secrets};
+use crate::{asr, asr_local, audio, config, insert, llm, secrets};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -237,9 +237,6 @@ fn release(app: &AppHandle, id: u64) {
 
 async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
     let cfg = config::load(&app);
-    let key = secrets::get_api_key().map_err(|e| {
-        format!("读取 API Key 失败: {e}。请从托盘菜单打开设置重新保存")
-    })?;
 
     emit(app, OverlayEvent::Listening {
         text: String::new(),
@@ -247,7 +244,19 @@ async fn start_flow(app: &AppHandle, mode: Mode) -> Result<(), String> {
     });
     show_overlay(app);
 
-    let session = asr::start(&cfg.asr_model, &key, &cfg.language_hints).await?;
+    // 按配置引擎分发：云端走百炼双工会话，本地走内置小模型，接口同构
+    let session = match cfg.asr_engine {
+        config::AsrEngine::Cloud => {
+            let key = secrets::get_api_key().map_err(|e| {
+                format!("读取 API Key 失败: {e}。请从托盘菜单打开设置重新保存")
+            })?;
+            asr::start(&cfg.asr_model, &key, &cfg.language_hints).await?
+        }
+        config::AsrEngine::Local => {
+            let model_dir = config::local_model_dir(app);
+            asr_local::start(&model_dir)?
+        }
+    };
 
     let audio_stopper = audio::spawn(session.audio_tx.clone(), cfg.input_device.as_deref())?;
 

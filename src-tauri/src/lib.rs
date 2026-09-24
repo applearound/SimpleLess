@@ -2,10 +2,12 @@
 //! 负责 API Key 的保存校验与首启自愈。
 
 mod asr;
+mod asr_local;
 mod audio;
 mod config;
 mod insert;
 mod llm;
+mod model_store;
 mod pipeline;
 mod secrets;
 
@@ -278,6 +280,11 @@ pub fn run() {
             list_input_devices,
             set_input_device,
             cancel_polish,
+            model_store::get_local_model_status,
+            model_store::download_local_model,
+            model_store::cancel_local_model_download,
+            model_store::delete_local_model,
+            model_store::set_asr_engine,
             pipeline::resize_overlay
         ])
         .run(tauri::generate_context!())

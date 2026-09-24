@@ -8,6 +8,10 @@ use tauri::Manager;
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub onboarded: bool,
+    /// 语音识别引擎：云端百炼或本地内置小模型。
+    /// 带默认值以兼容升级前的旧配置文件
+    #[serde(default)]
+    pub asr_engine: AsrEngine,
     pub asr_model: String,
     pub llm_model: String,
     /// 润色档位：raw 直接插入识别原文，polished 先经大模型润色
@@ -27,6 +31,19 @@ pub struct AppConfig {
 pub enum PolishMode {
     Raw,
     Polished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AsrEngine {
+    Cloud,
+    Local,
+}
+
+impl Default for AsrEngine {
+    fn default() -> Self {
+        Self::Cloud
+    }
 }
 
 impl PolishMode {
@@ -52,6 +69,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             onboarded: false,
+            asr_engine: AsrEngine::Cloud,
             asr_model: "fun-asr-realtime".into(),
             llm_model: "qwen3.7-flash".into(),
             polish_mode: PolishMode::Polished,
@@ -71,6 +89,15 @@ pub fn config_path(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."));
     std::fs::create_dir_all(&dir).ok();
     dir.join("config.json")
+}
+
+/// 本地识别模型的存放目录：{app_data}/models/sense-voice
+pub fn local_model_dir(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("models")
+        .join("sense-voice")
 }
 
 pub fn load(app: &tauri::AppHandle) -> AppConfig {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,10 +14,18 @@ interface AppConfig {
   hotkeyCommand: string;
   polishMode: string;
   asrModel: string;
+  asrEngine: "cloud" | "local";
   llmModel: string;
   maxRecordingSeconds: number;
   inputDevice?: string | null;
 }
+
+type LocalModelStatus = {
+  state: "not_downloaded" | "downloading" | "failed" | "ready";
+  downloaded?: number;
+  total?: number;
+  error?: string;
+};
 
 const onboarded = ref(false);
 const showKeyForm = ref(false);
@@ -44,6 +53,30 @@ const devicesError = ref("");
 const maxSeconds = ref("");
 const savingMaxSeconds = ref(false);
 
+// 本地识别模型状态与下载进度，事件由后端推送
+const localModel = ref<LocalModelStatus>({ state: "not_downloaded" });
+const switchingEngine = ref(false);
+// 下载完成后自动切到本地引擎的意愿标记：点击本地行触发下载时置真，
+// 下载期间用户主动点回云端则作废
+const autoSwitchOnReady = ref(false);
+let unlistenProgress: (() => void) | null = null;
+let unlistenState: (() => void) | null = null;
+let unlistenFocus: (() => void) | null = null;
+
+const isLocal = computed(() => config.value?.asrEngine === "local");
+
+const downloadPercent = computed(() => {
+  const { downloaded = 0, total = 0 } = localModel.value;
+  if (!total) return 0;
+  return Math.min(100, Math.round((downloaded / total) * 100));
+});
+
+function fmtBytes(n: number): string {
+  if (!n) return "0MB";
+  const mb = n / (1024 * 1024);
+  return mb >= 100 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
+}
+
 onMounted(async () => {
   try {
     const status = await invoke<{ onboarded: boolean; config: AppConfig }>("get_setup_status");
@@ -53,6 +86,52 @@ onMounted(async () => {
   } catch (e) {
     error.value = String(e);
   }
+  try {
+    localModel.value = await invoke<LocalModelStatus>("get_local_model_status");
+  } catch {
+    // 状态探测失败不阻断设置页，按未下载处理
+  }
+  unlistenProgress = await listen<{ downloaded: number; total: number }>(
+    "local-model-progress",
+    (e) => {
+      localModel.value = { state: "downloading", ...e.payload };
+    },
+  );
+  unlistenState = await listen<{ state: string; error?: string }>("local-model-state", async (e) => {
+    if (e.payload.state === "ready") {
+      localModel.value = { state: "ready" };
+      if (autoSwitchOnReady.value) {
+        autoSwitchOnReady.value = false;
+        await applyEngine("local");
+      }
+    } else if (e.payload.state === "failed") {
+      localModel.value = { state: "failed", error: e.payload.error ?? "下载失败" };
+      autoSwitchOnReady.value = false;
+    } else {
+      // 取消：回到探测到的真实状态
+      try {
+        localModel.value = await invoke<LocalModelStatus>("get_local_model_status");
+      } catch {
+        localModel.value = { state: "not_downloaded" };
+      }
+    }
+  });
+  // 设置窗口隐藏后复用，组件不重新挂载；窗口每次重新聚焦时
+  // 重新探测模型状态，文件可能被外部手动增删
+  unlistenFocus = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+    if (!focused || localModel.value.state === "downloading") return;
+    invoke<LocalModelStatus>("get_local_model_status")
+      .then((s) => {
+        localModel.value = s;
+      })
+      .catch(() => {});
+  });
+});
+
+onUnmounted(() => {
+  unlistenProgress?.();
+  unlistenState?.();
+  unlistenFocus?.();
 });
 
 async function save() {
@@ -213,6 +292,65 @@ async function saveMaxSeconds() {
     savingMaxSeconds.value = false;
   }
 }
+
+async function applyEngine(engine: "cloud" | "local") {
+  if (switchingEngine.value) return;
+  switchingEngine.value = true;
+  error.value = "";
+  try {
+    await invoke("set_asr_engine", { engine });
+    if (config.value) config.value.asrEngine = engine;
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    switchingEngine.value = false;
+  }
+}
+
+async function chooseEngine(engine: "cloud" | "local") {
+  if (engine === "cloud") {
+    autoSwitchOnReady.value = false;
+    if (config.value?.asrEngine !== "cloud") await applyEngine("cloud");
+    return;
+  }
+  if (config.value?.asrEngine === "local") return;
+  if (localModel.value.state === "ready") {
+    await applyEngine("local");
+    return;
+  }
+  if (localModel.value.state === "downloading") {
+    // 下载中再次点击视为确认下载完成后自动切换
+    autoSwitchOnReady.value = true;
+    return;
+  }
+  autoSwitchOnReady.value = true;
+  try {
+    await invoke("download_local_model");
+    localModel.value = { state: "downloading", downloaded: 0, total: 0 };
+  } catch (e) {
+    error.value = String(e);
+    autoSwitchOnReady.value = false;
+  }
+}
+
+async function cancelDownload() {
+  try {
+    await invoke("cancel_local_model_download");
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function deleteLocalModel() {
+  error.value = "";
+  try {
+    await invoke("delete_local_model");
+    localModel.value = { state: "not_downloaded" };
+    if (config.value?.asrEngine === "local") await applyEngine("cloud");
+  } catch (e) {
+    error.value = String(e);
+  }
+}
 </script>
 
 <template>
@@ -258,6 +396,92 @@ async function saveMaxSeconds() {
       <p class="text-xs leading-relaxed text-muted-foreground">
         按听写热键开始、再按一次结束，文本会插入当前光标处；按命令热键后用语音修改设置，比如说“切换成原文”。
       </p>
+
+      <div class="flex flex-col gap-2">
+        <h3 class="text-xs font-medium tracking-wider text-muted-foreground">语音识别</h3>
+        <div class="flex flex-col gap-1.5 rounded-lg border bg-background p-3">
+          <button
+            type="button"
+            class="flex w-full cursor-pointer items-start justify-between gap-3 rounded-md p-2 text-left transition-colors hover:bg-accent"
+            :class="isLocal && 'opacity-50'"
+            :title="isLocal ? '点击切回云端识别' : undefined"
+            @click="chooseEngine('cloud')"
+          >
+            <div class="flex flex-col gap-0.5">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-medium">云端识别</span>
+                <span
+                  v-if="isLocal"
+                  class="rounded-full bg-muted px-2 py-0.5 text-[10px] leading-4 text-muted-foreground"
+                >
+                  当前使用本地模型
+                </span>
+              </div>
+              <p class="text-xs leading-relaxed text-muted-foreground">
+                百炼实时识别，需联网与 API Key
+              </p>
+            </div>
+            <Check v-if="!isLocal" class="mt-0.5 size-4 shrink-0 text-primary" />
+          </button>
+
+          <div
+            v-if="localModel.state === 'downloading'"
+            class="flex flex-col gap-2 rounded-md bg-accent/40 p-2"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex flex-col gap-0.5">
+                <span class="text-sm font-medium">本地识别</span>
+                <p class="text-xs text-muted-foreground">
+                  正在下载 {{ fmtBytes(localModel.downloaded ?? 0) }} /
+                  {{ fmtBytes(localModel.total ?? 0) }}
+                </p>
+              </div>
+              <Button variant="outline" size="sm" @click="cancelDownload">取消</Button>
+            </div>
+            <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                class="h-full rounded-full bg-primary transition-all"
+                :style="{ width: `${downloadPercent}%` }"
+              />
+            </div>
+          </div>
+
+          <button
+            v-else
+            type="button"
+            class="flex w-full cursor-pointer items-start justify-between gap-3 rounded-md p-2 text-left transition-colors hover:bg-accent"
+            @click="chooseEngine('local')"
+          >
+            <div class="flex flex-col gap-0.5">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-medium">本地识别</span>
+                <Check v-if="isLocal" class="size-4 text-primary" />
+              </div>
+              <p v-if="localModel.state === 'failed'" class="text-xs leading-relaxed text-destructive">
+                {{ localModel.error ?? "下载失败" }}，点击重试
+              </p>
+              <p v-else class="text-xs leading-relaxed text-muted-foreground">
+                {{
+                  localModel.state === "ready"
+                    ? "内置离线小模型已就绪，中英日韩粤"
+                    : "内置离线小模型，中英日韩粤，约 230MB，点击下载"
+                }}
+              </p>
+            </div>
+            <Loader2 v-if="switchingEngine" class="mt-0.5 size-4 shrink-0 animate-spin" />
+          </button>
+
+          <div v-if="localModel.state === 'ready'" class="flex justify-end px-2 pb-1">
+            <button
+              type="button"
+              class="cursor-pointer text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              @click="deleteLocalModel"
+            >
+              删除本地模型，释放空间
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div class="flex flex-col gap-2">
         <h3 class="text-xs font-medium tracking-wider text-muted-foreground">录音与润色</h3>
@@ -473,7 +697,9 @@ async function saveMaxSeconds() {
           </div>
           <div class="flex justify-between">
             <dt class="text-muted-foreground">识别模型</dt>
-            <dd class="font-mono">{{ config.asrModel }}</dd>
+            <dd class="font-mono" :class="isLocal && 'text-muted-foreground'">
+              {{ isLocal ? "sense-voice（本地）" : config.asrModel }}
+            </dd>
           </div>
         </dl>
       </div>
