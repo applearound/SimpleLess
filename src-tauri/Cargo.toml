@@ -1,6 +1,6 @@
 [package]
 name = "simpleless"
-version = "0.2.4"
+version = "0.3.0"
 description = "A speech-first voice input tool"
 authors = ["Yezhou_LP"]
 license = "MIT"
