@@ -37,6 +37,38 @@ jobs:
       - name: 安装前端依赖
         run: bun install --frozen-lockfile
 
+      # sherpa-onnx-sys 会自行下载预编译静态库并缓存在 target/ 下，
+      # 但它只检查目录存在不校验内容，rust-cache 恢复的残缺目录会让
+      # 链接期才报错。这里显式下载带 curl 校验的官方包，交给 build.rs 解压
+      - name: 预下载 sherpa-onnx 预编译静态库
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver=$(grep -A1 'name = "sherpa-onnx-sys"' src-tauri/Cargo.lock | grep version | cut -d'"' -f2)
+          os="$(uname -s)"
+          arch="$(uname -m)"
+          case "$os" in
+            Linux)
+              case "$arch" in
+                x86_64) name="sherpa-onnx-v${ver}-linux-x64-static-lib.tar.bz2" ;;
+                aarch64) name="sherpa-onnx-v${ver}-linux-aarch64-static-lib.tar.bz2" ;;
+                *) echo "不支持的架构: $arch"; exit 1 ;;
+              esac ;;
+            Darwin)
+              case "$arch" in
+                x86_64) name="sherpa-onnx-v${ver}-osx-x64-static-lib.tar.bz2" ;;
+                arm64) name="sherpa-onnx-v${ver}-osx-arm64-static-lib.tar.bz2" ;;
+                *) echo "不支持的架构: $arch"; exit 1 ;;
+              esac ;;
+            MINGW*|MSYS*|CYGWIN*)
+              name="sherpa-onnx-v${ver}-win-x64-static-MT-Release-lib.tar.bz2" ;;
+            *) echo "不支持的系统: $os"; exit 1 ;;
+          esac
+          mkdir -p sherpa-archives
+          curl -fsSL --retry 5 -o "sherpa-archives/$name" \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${ver}/${name}"
+          echo "SHERPA_ONNX_ARCHIVE_DIR=$PWD/sherpa-archives" >> "$GITHUB_ENV"
+
       # 不传 release 参数时 tauri-action 只构建不发布
       - name: 构建产物
         uses: tauri-apps/tauri-action@v0
