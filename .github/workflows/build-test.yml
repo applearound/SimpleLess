@@ -26,12 +26,13 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # Tauri Linux 编译依赖，与官方 Prerequisites 清单一致
+      # Tauri Linux 编译依赖，与官方 Prerequisites 清单一致；
+      # libasound2-dev 供 cpal 的 ALSA 后端编译（alsa-sys 需要）
       - name: 安装 Linux 系统依赖
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
 
       - name: 安装前端依赖
         run: bun install --frozen-lockfile
