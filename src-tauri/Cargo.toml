@@ -44,6 +44,10 @@ env_logger = "0.11"
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = "2.1"
 
+# Linux：设备枚举的 DESC 描述字段（cpal 只暴露 NAME 标识）
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.9"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

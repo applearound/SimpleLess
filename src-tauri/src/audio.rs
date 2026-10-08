@@ -34,12 +34,166 @@ impl AudioStopper {
     }
 }
 
-/// 枚举可用输入设备名，供设置界面选择
-pub fn list_input_devices() -> Vec<String> {
+/// 可选录音设备：id 写入配置并用于设备匹配，label 供设置界面展示
+#[derive(serde::Serialize)]
+pub struct InputDeviceInfo {
+    pub id: String,
+    pub label: String,
+}
+
+/// 枚举可用输入设备，供设置界面选择。
+/// Linux 上 ALSA 会把每块声卡按插件层展开成多条同名通路（hw/plughw/front/dsnoop...），
+/// 这里收敛为每个物理通路一条 plughw:，并用 ALSA 的 DESC 字段做展示名；
+/// 其他平台设备名本身就是系统级的唯一友好名，原样透出
+pub fn list_input_devices() -> Vec<InputDeviceInfo> {
     let host = cpal::default_host();
-    host.input_devices()
-        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
-        .unwrap_or_default()
+    let devices: Vec<(String, cpal::Device)> = match host.input_devices() {
+        Ok(devs) => devs
+            .filter_map(|d| d.name().ok().map(|name| (name, d)))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        let kept: std::collections::HashSet<String> =
+            linux::prune_alsa_ids(&devices.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>())
+                .into_iter()
+                .collect();
+        let desc = linux::alsa_desc_map();
+        // default_input_config 能打开才可录，剔掉 HDMI 等纯输出通路
+        devices
+            .into_iter()
+            .filter(|(n, d)| kept.contains(n) && d.default_input_config().is_ok())
+            .map(|(n, _)| {
+                let label = desc.get(&n).cloned().unwrap_or_else(|| n.clone());
+                InputDeviceInfo { id: n, label }
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        devices
+            .into_iter()
+            .map(|(n, _)| InputDeviceInfo { id: n.clone(), label: n })
+            .collect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::collections::HashMap;
+
+    /// ALSA 设备名到 DESC 描述的映射（如 "HDA Intel PCH, ALC897 Analog"），
+    /// 与 cpal 枚举同源于 snd_device_name_hint，仅用于展示
+    pub fn alsa_desc_map() -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        let Ok(iter) = alsa::device_name::HintIter::new_str(None, "pcm") else {
+            return map;
+        };
+        for hint in iter {
+            if let (Some(name), Some(desc)) = (hint.name, hint.desc) {
+                map.entry(name).or_insert(desc);
+            }
+        }
+        map
+    }
+
+    /// 收敛 cpal 枚举出的 ALSA 设备名：保留 default 与 pipewire 两个虚拟设备，
+    /// 其余按 (CARD, DEV) 物理通路分组各留一条，优先 plughw:（自动格式转换，
+    /// 对采样率不匹配的场景比直通 hw: 兼容），组内没有 plughw: 时退而取 hw:
+    pub fn prune_alsa_ids(ids: &[String]) -> Vec<String> {
+        let mut best_rank: HashMap<(String, String), u8> = HashMap::new();
+        for id in ids {
+            if let (Some(rank), Some(key)) = (prefix_rank(id), physical_key(id)) {
+                best_rank
+                    .entry(key)
+                    .and_modify(|r| *r = (*r).min(rank))
+                    .or_insert(rank);
+            }
+        }
+        ids.iter()
+            .filter(|id| {
+                let id = id.as_str();
+                if id == "null" {
+                    return false;
+                }
+                if !id.contains("CARD=") {
+                    // pulse/sysdefault 的指向与 default 重叠，前者非标配、后者即默认
+                    return id == "default" || id == "pipewire";
+                }
+                match (prefix_rank(id), physical_key(id)) {
+                    (Some(rank), Some(key)) => best_rank.get(&key) == Some(&rank),
+                    _ => false,
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 插件层优先级：plughw 0 < hw 1；front/dsnoop/sysdefault 等不作代表，返回 None
+    fn prefix_rank(id: &str) -> Option<u8> {
+        if id.starts_with("plughw:") {
+            Some(0)
+        } else if id.starts_with("hw:") {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    /// 从 "plughw:CARD=PCH,DEV=0" 提取 ("PCH", "0")；旧式 "hw:0,0" 无 CARD 字段，返回 None
+    fn physical_key(id: &str) -> Option<(String, String)> {
+        let rest = id.split(':').nth(1)?;
+        Some((param(rest, "CARD")?, param(rest, "DEV").unwrap_or_else(|| "0".into())))
+    }
+
+    /// 取 "CARD=PCH,DEV=0" 中 key 对应的值
+    fn param(rest: &str, key: &str) -> Option<String> {
+        rest.split(',')
+            .find_map(|p| p.strip_prefix(key)?.strip_prefix('=').map(str::to_string))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::prune_alsa_ids;
+
+        #[test]
+        fn test_prune_alsa_ids() {
+            let ids: Vec<String> = [
+                "null",
+                "default",
+                "pipewire",
+                "pulse",
+                "hw:CARD=PCH,DEV=0",
+                "plughw:CARD=PCH,DEV=0",
+                "sysdefault:CARD=PCH",
+                "front:CARD=PCH,DEV=0",
+                "dsnoop:CARD=PCH,DEV=0",
+                "hw:CARD=PCH,DEV=2",
+                "plughw:CARD=PCH,DEV=2",
+                "hw:CARD=Camera,DEV=0",
+                "hdmi:CARD=PCH,DEV=3",
+                "usbstream:CARD=Camera,DEV=0",
+                "hw:0,0",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            let kept = prune_alsa_ids(&ids);
+            assert_eq!(
+                kept,
+                [
+                    "default",
+                    "pipewire",
+                    "plughw:CARD=PCH,DEV=0",
+                    "plughw:CARD=PCH,DEV=2",
+                    // 该组无 plughw: 条目，退回 hw:
+                    "hw:CARD=Camera,DEV=0",
+                ]
+            );
+        }
+    }
 }
 
 /// 按配置解析采集设备：None 跟随系统默认；指定名称找不到时直接报错，
@@ -264,9 +418,18 @@ mod tests {
         };
         assert!(err.contains("找不到"), "错误信息应说明设备缺失: {err}");
 
-        // 枚举出的名字应能被原样解析回设备
-        if let Some(name) = super::list_input_devices().first() {
-            assert!(super::resolve_input_device(Some(name)).is_ok());
+        // 枚举出的 id 应能被原样解析回设备
+        if let Some(id) = super::list_input_devices().first().map(|d| d.id.clone()) {
+            assert!(super::resolve_input_device(Some(&id)).is_ok());
+        }
+    }
+
+    /// 排障工具：打印收敛后的设备列表（id 与展示名），核对选择器呈现
+    #[test]
+    #[ignore = "依赖真实音频设备，仅排障时手动执行"]
+    fn test_list_devices() {
+        for d in super::list_input_devices() {
+            eprintln!("[设备诊断] id={} label={}", d.id, d.label);
         }
     }
 }

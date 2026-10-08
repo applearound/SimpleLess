@@ -119,7 +119,7 @@ fn set_max_recording_seconds(app: tauri::AppHandle, seconds: u64) -> Result<(), 
 }
 
 #[tauri::command]
-fn list_input_devices() -> Result<Vec<String>, String> {
+fn list_input_devices() -> Result<Vec<audio::InputDeviceInfo>, String> {
     Ok(audio::list_input_devices())
 }
 

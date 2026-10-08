@@ -45,7 +45,11 @@ const modelMessage = ref("");
 
 // 录音设备下拉：打开时枚举，选中即保存；null 表示跟随系统默认
 const deviceOpen = ref(false);
-const devices = ref<string[]>([]);
+interface InputDeviceInfo {
+  id: string;
+  label: string;
+}
+const devices = ref<InputDeviceInfo[]>([]);
 const devicesLoading = ref(false);
 const devicesError = ref("");
 
@@ -176,7 +180,7 @@ async function loadDevices() {
   devicesLoading.value = true;
   devicesError.value = "";
   try {
-    devices.value = await invoke<string[]>("list_input_devices");
+    devices.value = await invoke<InputDeviceInfo[]>("list_input_devices");
   } catch (e) {
     devicesError.value = String(e);
   } finally {
@@ -199,6 +203,13 @@ async function chooseDevice(device: string | null) {
   await invoke("set_input_device", { device });
   if (config.value) config.value.inputDevice = device;
 }
+
+// 触发按钮回显当前设备：优先展示友好名，设备列表未加载时退回原始 id
+const currentDeviceLabel = computed(() => {
+  const id = config.value?.inputDevice;
+  if (!id) return "系统默认";
+  return devices.value.find((d) => d.id === id)?.label ?? id;
+});
 
 const filteredModels = computed(() => {
   const q = modelSearch.value.trim().toLowerCase();
@@ -630,7 +641,7 @@ async function deleteLocalModel() {
                   :aria-expanded="deviceOpen"
                   class="w-44 justify-between font-normal"
                 >
-                  <span class="truncate text-xs">{{ config?.inputDevice ?? "系统默认" }}</span>
+                  <span class="truncate text-xs">{{ currentDeviceLabel }}</span>
                   <ChevronsUpDown class="size-4 shrink-0 opacity-50" />
                 </Button>
               </PopoverTrigger>
@@ -662,14 +673,14 @@ async function deleteLocalModel() {
                     </button>
                     <button
                       v-for="d in devices"
-                      :key="d"
+                      :key="d.id"
                       type="button"
                       class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                      @click="chooseDevice(d)"
+                      @click="chooseDevice(d.id)"
                     >
-                      <span class="truncate">{{ d }}</span>
+                      <span class="truncate">{{ d.label }}</span>
                       <Check
-                        v-if="d === config?.inputDevice"
+                        v-if="d.id === config?.inputDevice"
                         class="size-4 shrink-0 text-primary"
                       />
                     </button>
