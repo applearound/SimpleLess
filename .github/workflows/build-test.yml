@@ -71,6 +71,10 @@ jobs:
           tar -xjf "sherpa-libs/$name" -C sherpa-libs
           libdir="$PWD/sherpa-libs/${name%.tar.bz2}/lib"
           ls "$libdir" | grep -qi 'c-api' || { echo "解压结果缺少 c-api 库"; exit 1; }
+          # Windows 的原生 Rust 工具链不识别 git-bash 的 /d/a/ 路径，转成原生格式
+          if command -v cygpath >/dev/null 2>&1; then
+            libdir=$(cygpath -w "$libdir")
+          fi
           echo "SHERPA_ONNX_LIB_DIR=$libdir" >> "$GITHUB_ENV"
 
       # 不传 release 参数时 tauri-action 只构建不发布
