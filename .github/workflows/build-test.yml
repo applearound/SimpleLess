@@ -37,9 +37,10 @@ jobs:
       - name: 安装前端依赖
         run: bun install --frozen-lockfile
 
-      # sherpa-onnx-sys 会自行下载预编译静态库并缓存在 target/ 下，
-      # 但它只检查目录存在不校验内容，rust-cache 恢复的残缺目录会让
-      # 链接期才报错。这里显式下载带 curl 校验的官方包，交给 build.rs 解压
+      # sherpa-onnx-sys 的库缓存放在 target/ 下，rust-cache 保存前会清空
+      # 非 Cargo 布局目录里的文件，留下残缺目录被 build.rs 误用，链接期才报错。
+      # 这里下载官方包并解压到 workspace，用 SHERPA_ONNX_LIB_DIR 直连，
+      # 该变量是 build.rs 的第一优先级，完全绕开 target 缓存
       - name: 预下载 sherpa-onnx 预编译静态库
         shell: bash
         run: |
@@ -64,10 +65,13 @@ jobs:
               name="sherpa-onnx-v${ver}-win-x64-static-MT-Release-lib.tar.bz2" ;;
             *) echo "不支持的系统: $os"; exit 1 ;;
           esac
-          mkdir -p sherpa-archives
-          curl -fsSL --retry 5 -o "sherpa-archives/$name" \
+          mkdir -p sherpa-libs
+          curl -fsSL --retry 5 -o "sherpa-libs/$name" \
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${ver}/${name}"
-          echo "SHERPA_ONNX_ARCHIVE_DIR=$PWD/sherpa-archives" >> "$GITHUB_ENV"
+          tar -xjf "sherpa-libs/$name" -C sherpa-libs
+          libdir="$PWD/sherpa-libs/${name%.tar.bz2}/lib"
+          ls "$libdir" | grep -qi 'c-api' || { echo "解压结果缺少 c-api 库"; exit 1; }
+          echo "SHERPA_ONNX_LIB_DIR=$libdir" >> "$GITHUB_ENV"
 
       # 不传 release 参数时 tauri-action 只构建不发布
       - name: 构建产物
