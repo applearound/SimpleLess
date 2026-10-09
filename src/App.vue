@@ -6,7 +6,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { Check, ChevronsUpDown, Loader2, RefreshCw } from "lucide-vue-next";
 
@@ -131,9 +130,6 @@ onMounted(async () => {
       })
       .catch(() => {});
   });
-  // 首屏挂载完成后通知后端，已配置实例此时才把窗口收进托盘：
-  // WebkitGTK 在页面不可见状态下构建 DOM 会得到残缺结果
-  await invoke("frontend_ready");
 });
 
 onUnmounted(() => {
@@ -638,23 +634,18 @@ async function deleteLocalModel() {
           <div class="flex items-center justify-between gap-3">
             <span class="text-sm font-medium">录音设备</span>
             <Popover :open="deviceOpen" @update:open="onDeviceOpenChange">
-              <!-- 悬停显示完整设备名：tooltip 触发器与 popover 触发器共用同一个按钮 -->
-              <Tooltip>
-                <TooltipTrigger as-child>
-                  <PopoverTrigger as-child>
-                    <Button
-                      variant="outline"
-                      role="combobox"
-                      :aria-expanded="deviceOpen"
-                      class="w-44 justify-between font-normal"
-                    >
-                      <span class="truncate text-xs">{{ currentDeviceLabel }}</span>
-                      <ChevronsUpDown class="size-4 shrink-0 opacity-50" />
-                    </Button>
-                  </PopoverTrigger>
-                </TooltipTrigger>
-                <TooltipContent>{{ currentDeviceLabel }}</TooltipContent>
-              </Tooltip>
+              <PopoverTrigger as-child>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  :aria-expanded="deviceOpen"
+                  class="w-44 justify-between font-normal"
+                  :title="currentDeviceLabel"
+                >
+                  <span class="truncate text-xs">{{ currentDeviceLabel }}</span>
+                  <ChevronsUpDown class="size-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
               <PopoverContent align="start" class="w-[var(--reka-popover-trigger-width)] p-0">
                 <div class="max-h-60 overflow-y-auto p-1">
                   <div
@@ -681,22 +672,20 @@ async function deleteLocalModel() {
                         class="size-4 shrink-0 text-primary"
                       />
                     </button>
-                    <Tooltip v-for="d in devices" :key="d.id">
-                      <TooltipTrigger as-child>
-                        <button
-                          type="button"
-                          class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                          @click="chooseDevice(d.id)"
-                        >
-                          <span class="truncate">{{ d.label }}</span>
-                          <Check
-                            v-if="d.id === config?.inputDevice"
-                            class="size-4 shrink-0 text-primary"
-                          />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="right">{{ d.label }}</TooltipContent>
-                    </Tooltip>
+                    <button
+                      v-for="d in devices"
+                      :key="d.id"
+                      type="button"
+                      class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      :title="d.label"
+                      @click="chooseDevice(d.id)"
+                    >
+                      <span class="truncate">{{ d.label }}</span>
+                      <Check
+                        v-if="d.id === config?.inputDevice"
+                        class="size-4 shrink-0 text-primary"
+                      />
+                    </button>
                     <p v-if="devices.length === 0" class="px-2 py-4 text-center text-sm text-muted-foreground">
                       未发现录音设备
                     </p>
