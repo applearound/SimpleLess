@@ -46,6 +46,9 @@ pub struct InputDeviceInfo {
 /// 这里收敛为每个物理通路一条 plughw:，并用 ALSA 的 DESC 字段做展示名；
 /// 其他平台设备名本身就是系统级的唯一友好名，原样透出
 pub fn list_input_devices() -> Vec<InputDeviceInfo> {
+    #[cfg(target_os = "linux")]
+    linux::silence_alsa_logs();
+
     let host = cpal::default_host();
     let devices: Vec<(String, cpal::Device)> = match host.input_devices() {
         Ok(devs) => devs
@@ -83,6 +86,36 @@ pub fn list_input_devices() -> Vec<InputDeviceInfo> {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::collections::HashMap;
+    use std::ffi::{c_char, c_int};
+    use std::sync::Once;
+
+    /// 枚举设备时 ALSA 会逐个试开插件通路，对不匹配的插件（dmix 仅播放、
+    /// dsnoop 仅录音等）打一整屏探测提示到 stderr，纯噪音。安装静默
+    /// 错误处理器屏蔽这类输出；设备打开失败的错误仍以 Result 返回。
+    pub fn silence_alsa_logs() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| unsafe {
+            snd_lib_error_set_handler(Some(quiet_alsa_handler));
+        });
+    }
+
+    type AlsaErrorHandler =
+        Option<unsafe extern "C" fn(*const c_char, c_int, *const c_char, c_int, *const c_char)>;
+
+    // C 侧 handler 声明为变参且无返回值，此处按前缀参数声明即可，
+    // 变参实参被忽略在 SysV ABI 下是安全的
+    extern "C" {
+        fn snd_lib_error_set_handler(handler: AlsaErrorHandler) -> c_int;
+    }
+
+    unsafe extern "C" fn quiet_alsa_handler(
+        _: *const c_char,
+        _: c_int,
+        _: *const c_char,
+        _: c_int,
+        _: *const c_char,
+    ) {
+    }
 
     /// ALSA 设备名到 DESC 描述的映射（如 "HDA Intel PCH, ALC897 Analog"），
     /// 与 cpal 枚举同源于 snd_device_name_hint，仅用于展示
@@ -203,6 +236,9 @@ mod linux {
 /// 按配置解析采集设备：None 跟随系统默认；指定名称找不到时直接报错，
 /// 不静默回落到默认设备，避免用户以为在用选定的麦克风、实际录进了别的设备
 fn resolve_input_device(preferred: Option<&str>) -> Result<cpal::Device, String> {
+    #[cfg(target_os = "linux")]
+    linux::silence_alsa_logs();
+
     let host = cpal::default_host();
     match preferred {
         None => host
