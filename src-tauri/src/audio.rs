@@ -93,7 +93,11 @@ mod linux {
         };
         for hint in iter {
             if let (Some(name), Some(desc)) = (hint.name, hint.desc) {
-                map.entry(name).or_insert(desc);
+                // DESC 是两行文本：首行设备描述（"HDA Intel PCH, ALC897 Analog"），
+                // 次行插件用途说明（"Direct hardware device without any
+                // conversions"），界面只展示首行
+                let label = desc.lines().next().unwrap_or(&desc).to_string();
+                map.entry(name).or_insert(label);
             }
         }
         map
