@@ -67,8 +67,12 @@ async fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
     }
     // 先测通再落盘，避免把坏 key 存进系统凭据管理器
     llm::verify_key(&key, &config::load(&app).llm_model).await?;
-    // set 内部会直读钥匙串做回读校验，并更新进程内缓存
-    secrets::set_api_key(&key)?;
+    // set 内部会直读钥匙串做回读校验，并更新进程内缓存。
+    // Secret Service 后端要在当前线程 block_on 驱动 zbus，
+    // 必须挪到阻塞线程池执行，否则在 tokio worker 上嵌套起 runtime 会 panic
+    tauri::async_runtime::spawn_blocking(move || secrets::set_api_key(&key))
+        .await
+        .map_err(|e| format!("凭据保存任务失败: {e}"))??;
     let mut cfg = config::load(&app);
     cfg.onboarded = true;
     config::save(&app, &cfg);
@@ -77,7 +81,10 @@ async fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
 
 #[tauri::command]
 async fn list_llm_models() -> Result<Vec<String>, String> {
-    let key = secrets::get_api_key().map_err(|_| "尚未保存 API Key，请先完成首次配置".to_string())?;
+    let key = tauri::async_runtime::spawn_blocking(secrets::get_api_key)
+        .await
+        .map_err(|e| format!("凭据读取任务失败: {e}"))?
+        .map_err(|_| "尚未保存 API Key，请先完成首次配置".to_string())?;
     llm::list_models(&key).await
 }
 
