@@ -131,6 +131,9 @@ onMounted(async () => {
       })
       .catch(() => {});
   });
+  // 首屏挂载完成后通知后端，已配置实例此时才把窗口收进托盘：
+  // WebkitGTK 在页面不可见状态下构建 DOM 会得到残缺结果
+  await invoke("frontend_ready");
 });
 
 onUnmounted(() => {

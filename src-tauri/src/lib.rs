@@ -141,6 +141,17 @@ fn set_input_device(app: tauri::AppHandle, device: Option<String>) -> Result<(),
 }
 
 #[tauri::command]
+fn frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
+    // 前端首屏挂载完成后调用；已配置实例此时才把主窗口收进托盘
+    if config::load(&app).onboarded {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.hide();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn cancel_polish(app: tauri::AppHandle) -> Result<(), String> {
     if app.state::<Pipeline>().cancel_active_polish() {
         Ok(())
@@ -181,12 +192,10 @@ pub fn run() {
                 config::save(&app.handle(), &cfg);
             }
 
-            // 首启向导：已配置过则隐藏主窗口，交由托盘
-            if cfg.onboarded {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.hide();
-                }
-            }
+            // 已配置实例的首屏挂载完成后由 frontend_ready 收进托盘；
+            // 不能在此处直接 hide：WebkitGTK 在页面不可见状态下构建 DOM
+            // 会得到残缺结果（设置面板区域整体丢失），必须保证首屏
+            // 挂载发生在窗口可见状态
 
             // 迁移：macOS 上 Caps Lock 无法注册为全局热键，
             // 仍持有旧默认热键的配置换成当前平台默认值
@@ -287,6 +296,7 @@ pub fn run() {
             list_input_devices,
             set_input_device,
             cancel_polish,
+            frontend_ready,
             model_store::get_local_model_status,
             model_store::download_local_model,
             model_store::cancel_local_model_download,
